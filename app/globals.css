@@ -85,6 +85,68 @@ h2 {
   gap: 8px;
 }
 
+.title-block-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.retry-bootstrap {
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: #e3eef1;
+  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.retry-bootstrap:hover {
+  filter: brightness(0.97);
+}
+
+.missing-supabase {
+  max-width: 520px;
+}
+
+.missing-supabase h1 {
+  margin-bottom: 12px;
+  font-size: 1.35rem;
+}
+
+.missing-supabase code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--surface-muted);
+  font-size: 0.88em;
+}
+
+.form-fieldset {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  border: none;
+}
+
+.icon-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.month-row:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settings-save:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .topbar-tools {
   display: flex;
   align-items: stretch;

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   ArrowDownCircle,
   ArrowUpCircle,
@@ -17,7 +17,7 @@ import { supabase } from "@/lib/supabase";
 type TransactionType = "income" | "expense";
 type ActiveView = "period" | "global";
 type ActiveChart = "flow" | "trend" | "category" | "top";
-type SyncStatus = "local" | "syncing" | "synced" | "error";
+type SyncStatus = "loading" | "syncing" | "synced" | "error";
 
 type Transaction = {
   id: number;
@@ -27,12 +27,6 @@ type Transaction = {
   category: string;
   month: string;
   date: string;
-};
-
-type StoredState = {
-  paydayDay?: number;
-  selectedPeriod?: string;
-  transactions: Transaction[];
 };
 
 type FinanceTransactionRow = {
@@ -73,8 +67,6 @@ type ChartItem = {
   total: number;
   count: number;
 };
-
-const storageKey = "finanzas-minimal-simple-v1";
 
 const currency = new Intl.NumberFormat("es-ES", {
   style: "currency",
@@ -328,15 +320,6 @@ function groupExpensesBy(
   return Array.from(groups.values()).sort((first, second) => second.total - first.total);
 }
 
-function isStoredState(value: unknown): value is StoredState {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const candidate = value as Partial<StoredState>;
-  return Array.isArray(candidate.transactions);
-}
-
 function makeDateInPeriod(period: string, paydayDay: number) {
   return getPeriodRange(period, paydayDay).startInput;
 }
@@ -353,40 +336,6 @@ function normalizeTransactions(transactions: Transaction[], paydayDay: number) {
       month: getPeriodKeyForDate(date, paydayDay),
     };
   });
-}
-
-function defaultTransactions(period: string, paydayDay: number): Transaction[] {
-  const startInput = getPeriodRange(period, paydayDay).startInput;
-
-  return [
-    {
-      id: 1,
-      description: "Nomina",
-      amount: 1800,
-      type: "income",
-      category: "Ingresos",
-      month: period,
-      date: startInput,
-    },
-    {
-      id: 2,
-      description: "Alquiler",
-      amount: 720,
-      type: "expense",
-      category: "Casa",
-      month: period,
-      date: startInput,
-    },
-    {
-      id: 3,
-      description: "Supermercado",
-      amount: 145,
-      type: "expense",
-      category: "Comida",
-      month: period,
-      date: startInput,
-    },
-  ];
 }
 
 function mapTransactionRow(row: FinanceTransactionRow): Transaction {
@@ -414,22 +363,36 @@ function createTransactionPayload(transaction: Transaction, userId: string) {
 }
 
 function getSyncLabel(status: SyncStatus) {
-  if (status === "synced") {
-    return "Supabase";
+  switch (status) {
+    case "synced":
+      return "Base de datos";
+    case "syncing":
+      return "Guardando";
+    case "loading":
+      return "Cargando";
+    case "error":
+      return "Error";
+    default:
+      return "";
   }
-
-  if (status === "syncing") {
-    return "Sincronizando";
-  }
-
-  return "Local";
 }
 
-function markSupabaseUnavailable(setSyncStatus: (status: SyncStatus) => void) {
-  setSyncStatus("local");
+function MissingSupabase() {
+  return (
+    <main className="shell">
+      <section className="panel missing-supabase" aria-label="Configuracion requerida">
+        <h1>Falta configurar Supabase</h1>
+        <p>
+          Anade en <code>.env.local</code>: <code>NEXT_PUBLIC_SUPABASE_URL</code> y{" "}
+          <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code>. Reinicia el servidor despues de guardar.
+        </p>
+      </section>
+    </main>
+  );
 }
 
-export default function Home() {
+function FinanceApp() {
+  const db = supabase!;
   const initialPaydayDay = 1;
   const initialPeriod = getPeriodKeyForDate(todayInputValue(), initialPaydayDay);
   const [selectedPeriod, setSelectedPeriod] = useState(initialPeriod);
@@ -438,13 +401,10 @@ export default function Home() {
   const [draftPaydayDay, setDraftPaydayDay] = useState(String(initialPaydayDay));
   const [activeView, setActiveView] = useState<ActiveView>("period");
   const [activeChart, setActiveChart] = useState<ActiveChart>("flow");
-  const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("loading");
   const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
-  const hasBootstrappedSupabase = useRef(false);
-  const [transactions, setTransactions] = useState<Transaction[]>(() =>
-    defaultTransactions(initialPeriod, initialPaydayDay),
-  );
-  const [hasLoadedStorage, setHasLoadedStorage] = useState(false);
+  const [bootstrapNonce, setBootstrapNonce] = useState(0);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [type, setType] = useState<TransactionType>("expense");
@@ -454,57 +414,17 @@ export default function Home() {
   );
 
   useEffect(() => {
-    /* eslint-disable react-hooks/set-state-in-effect */
-    // Hydrate after mount so server HTML and the first client render stay aligned.
-    const storedValue = window.localStorage.getItem(storageKey);
+    let cancelled = false;
 
-    if (storedValue) {
-      try {
-        const parsedValue: unknown = JSON.parse(storedValue);
-
-        if (isStoredState(parsedValue)) {
-          const nextPaydayDay = clampPaydayDay(parsedValue.paydayDay ?? 1);
-          const nextTransactions = normalizeTransactions(parsedValue.transactions, nextPaydayDay);
-          const nextPeriod = isMonthKey(parsedValue.selectedPeriod)
-            ? parsedValue.selectedPeriod
-            : getPeriodKeyForDate(todayInputValue(), nextPaydayDay);
-
-          setPaydayDay(nextPaydayDay);
-          setSelectedPeriod(nextPeriod);
-          setDraftPaydayDay(String(nextPaydayDay));
-          setDraftSelectedPeriod(nextPeriod);
-          setMovementDate(getDefaultMovementDate(nextPeriod, nextPaydayDay));
-          setTransactions(nextTransactions);
-        }
-      } catch {
-        window.localStorage.removeItem(storageKey);
-      }
-    }
-
-    setHasLoadedStorage(true);
-    /* eslint-enable react-hooks/set-state-in-effect */
-  }, []);
-
-  useEffect(() => {
-    if (!hasLoadedStorage || !supabase || hasBootstrappedSupabase.current) {
-      return;
-    }
-
-    hasBootstrappedSupabase.current = true;
-
-    async function bootstrapSupabase() {
-      if (!supabase) {
-        return;
-      }
-
-      setSyncStatus("syncing");
+    async function bootstrap() {
+      setSyncStatus("loading");
 
       try {
-        const sessionResult = await supabase.auth.getSession();
+        const sessionResult = await db.auth.getSession();
         let userId = sessionResult.data.session?.user.id;
 
         if (!userId) {
-          const signInResult = await supabase.auth.signInAnonymously();
+          const signInResult = await db.auth.signInAnonymously();
 
           if (signInResult.error) {
             throw signInResult.error;
@@ -517,9 +437,13 @@ export default function Home() {
           throw new Error("No Supabase user id");
         }
 
+        if (cancelled) {
+          return;
+        }
+
         setSupabaseUserId(userId);
 
-        const settingsResult = await supabase
+        const settingsResult = await db
           .from("finance_settings")
           .select("payday_day, selected_period")
           .eq("user_id", userId)
@@ -529,11 +453,13 @@ export default function Home() {
           throw settingsResult.error;
         }
 
-        const nextPaydayDay = clampPaydayDay(settingsResult.data?.payday_day ?? paydayDay);
+        const nextPaydayDay = clampPaydayDay(settingsResult.data?.payday_day ?? 1);
         const remoteSelectedPeriod = settingsResult.data?.selected_period;
-        const nextPeriod = isMonthKey(remoteSelectedPeriod)
-          ? remoteSelectedPeriod
-          : selectedPeriod;
+        const nextPeriod = isMonthKey(remoteSelectedPeriod) ? remoteSelectedPeriod : currentMonth();
+
+        if (cancelled) {
+          return;
+        }
 
         setPaydayDay(nextPaydayDay);
         setSelectedPeriod(nextPeriod);
@@ -542,20 +468,18 @@ export default function Home() {
         setMovementDate(getDefaultMovementDate(nextPeriod, nextPaydayDay));
 
         if (!settingsResult.data) {
-          const settingsUpsert = await supabase
-            .from("finance_settings")
-            .upsert({
-              user_id: userId,
-              payday_day: nextPaydayDay,
-              selected_period: nextPeriod,
-            });
+          const settingsUpsert = await db.from("finance_settings").upsert({
+            user_id: userId,
+            payday_day: nextPaydayDay,
+            selected_period: nextPeriod,
+          });
 
           if (settingsUpsert.error) {
             throw settingsUpsert.error;
           }
         }
 
-        const transactionsResult = await supabase
+        const transactionsResult = await db
           .from("finance_transactions")
           .select("id, description, amount, type, category, period, transaction_date")
           .eq("user_id", userId)
@@ -570,46 +494,33 @@ export default function Home() {
           mapTransactionRow(row as FinanceTransactionRow),
         );
 
+        if (cancelled) {
+          return;
+        }
+
         if (remoteTransactions.length > 0) {
           setTransactions(normalizeTransactions(remoteTransactions, nextPaydayDay));
         } else {
-          const localTransactions = normalizeTransactions(transactions, nextPaydayDay);
-          const insertResult = await supabase
-            .from("finance_transactions")
-            .insert(localTransactions.map((transaction) => createTransactionPayload(transaction, userId)))
-            .select("id, description, amount, type, category, period, transaction_date");
-
-          if (insertResult.error) {
-            throw insertResult.error;
-          }
-
-          setTransactions(
-            (insertResult.data ?? []).map((row) => mapTransactionRow(row as FinanceTransactionRow)),
-          );
+          setTransactions([]);
         }
 
-        setSyncStatus("synced");
+        if (!cancelled) {
+          setSyncStatus("synced");
+        }
       } catch {
-        setSupabaseUserId(null);
-        markSupabaseUnavailable(setSyncStatus);
+        if (!cancelled) {
+          setSupabaseUserId(null);
+          setSyncStatus("error");
+        }
       }
     }
 
-    void bootstrapSupabase();
-    // Supabase bootstrap should run once after local state hydration.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasLoadedStorage]);
+    void bootstrap();
 
-  useEffect(() => {
-    if (!hasLoadedStorage) {
-      return;
-    }
-
-    window.localStorage.setItem(
-      storageKey,
-      JSON.stringify({ paydayDay, selectedPeriod, transactions }),
-    );
-  }, [hasLoadedStorage, paydayDay, selectedPeriod, transactions]);
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapNonce]);
 
   const periodTransactions = useMemo(() => {
     return transactions.filter(
@@ -744,19 +655,14 @@ export default function Home() {
       ? draftSelectedPeriod
       : getPeriodKeyForDate(todayInputValue(), nextPaydayDay);
 
-    setPaydayDay(nextPaydayDay);
-    setSelectedPeriod(nextPeriod);
-    setDraftPaydayDay(String(nextPaydayDay));
-    setDraftSelectedPeriod(nextPeriod);
-    setMovementDate(getDefaultMovementDate(nextPeriod, nextPaydayDay));
-
-    if (!supabase || !supabaseUserId) {
+    if (!supabaseUserId) {
+      setSyncStatus("error");
       return;
     }
 
     setSyncStatus("syncing");
 
-    const result = await supabase.from("finance_settings").upsert(
+    const result = await db.from("finance_settings").upsert(
       {
         user_id: supabaseUserId,
         payday_day: nextPaydayDay,
@@ -766,10 +672,15 @@ export default function Home() {
     );
 
     if (result.error) {
-      markSupabaseUnavailable(setSyncStatus);
+      setSyncStatus("error");
       return;
     }
 
+    setPaydayDay(nextPaydayDay);
+    setSelectedPeriod(nextPeriod);
+    setDraftPaydayDay(String(nextPaydayDay));
+    setDraftSelectedPeriod(nextPeriod);
+    setMovementDate(getDefaultMovementDate(nextPeriod, nextPaydayDay));
     setSyncStatus("synced");
   }
 
@@ -783,10 +694,15 @@ export default function Home() {
       return;
     }
 
+    if (!supabaseUserId) {
+      setSyncStatus("error");
+      return;
+    }
+
     const transactionPeriod = getPeriodKeyForDate(movementDate, paydayDay);
 
-    const optimisticTransaction = {
-      id: Date.now(),
+    const pendingTransaction: Transaction = {
+      id: 0,
       description: cleanDescription,
       amount: parsedAmount,
       type,
@@ -795,7 +711,21 @@ export default function Home() {
       date: movementDate,
     };
 
-    setTransactions((current) => [optimisticTransaction, ...current]);
+    setSyncStatus("syncing");
+
+    const insertResult = await db
+      .from("finance_transactions")
+      .insert(createTransactionPayload(pendingTransaction, supabaseUserId))
+      .select("id, description, amount, type, category, period, transaction_date")
+      .single();
+
+    if (insertResult.error) {
+      setSyncStatus("error");
+      return;
+    }
+
+    const savedTransaction = mapTransactionRow(insertResult.data as FinanceTransactionRow);
+    setTransactions((current) => [savedTransaction, ...current]);
 
     setSelectedPeriod(transactionPeriod);
     setDraftSelectedPeriod(transactionPeriod);
@@ -804,60 +734,46 @@ export default function Home() {
     setCategory("General");
     setMovementDate(getDefaultMovementDate(transactionPeriod, paydayDay));
 
-    if (!supabase || !supabaseUserId) {
-      return;
-    }
-
-    setSyncStatus("syncing");
-
-    const insertResult = await supabase
-      .from("finance_transactions")
-      .insert(createTransactionPayload(optimisticTransaction, supabaseUserId))
-      .select("id, description, amount, type, category, period, transaction_date")
-      .single();
-
-    if (insertResult.error) {
-      markSupabaseUnavailable(setSyncStatus);
-      return;
-    }
-
-    const savedTransaction = mapTransactionRow(insertResult.data as FinanceTransactionRow);
-    setTransactions((current) =>
-      current.map((transaction) =>
-        transaction.id === optimisticTransaction.id ? savedTransaction : transaction,
-      ),
-    );
     setSyncStatus("synced");
   }
 
   async function removeTransaction(id: number) {
-    setTransactions((current) => current.filter((transaction) => transaction.id !== id));
-
-    if (!supabase || !supabaseUserId) {
+    if (!supabaseUserId) {
+      setSyncStatus("error");
       return;
     }
 
     setSyncStatus("syncing");
 
-    const deleteResult = await supabase
+    const deleteResult = await db
       .from("finance_transactions")
       .delete()
       .eq("user_id", supabaseUserId)
       .eq("id", id);
 
     if (deleteResult.error) {
-      markSupabaseUnavailable(setSyncStatus);
+      setSyncStatus("error");
       return;
     }
 
+    setTransactions((current) => current.filter((transaction) => transaction.id !== id));
     setSyncStatus("synced");
   }
+
+  const interactive = syncStatus === "synced";
 
   return (
     <main className="shell">
       <section className="topbar" aria-label="Resumen principal">
         <div className="title-block">
-          <p className="eyebrow">Panel personal / {getSyncLabel(syncStatus)}</p>
+          <div className="title-block-status">
+            <p className="eyebrow">Panel personal / {getSyncLabel(syncStatus)}</p>
+            {syncStatus === "error" ? (
+              <button className="retry-bootstrap" type="button" onClick={() => setBootstrapNonce((n) => n + 1)}>
+                Reintentar conexion
+              </button>
+            ) : null}
+          </div>
           <h1>Finanzas</h1>
         </div>
         <div className="topbar-tools">
@@ -901,6 +817,7 @@ export default function Home() {
               <CalendarDays aria-hidden="true" size={18} />
               <span>Periodo</span>
               <input
+                disabled={!interactive}
                 type="month"
                 value={draftSelectedPeriod}
                 onChange={(event) => setDraftSelectedPeriod(event.target.value)}
@@ -910,6 +827,7 @@ export default function Home() {
               <Banknote aria-hidden="true" size={18} />
               <span>Día de cobro</span>
               <input
+                disabled={!interactive}
                 max="31"
                 min="1"
                 type="number"
@@ -920,7 +838,12 @@ export default function Home() {
               />
             </label>
           </div>
-          <button className="settings-save" type="button" onClick={savePeriodSettings}>
+          <button
+            className="settings-save"
+            disabled={!interactive}
+            type="button"
+            onClick={() => void savePeriodSettings()}
+          >
             <Save aria-hidden="true" size={17} />
             Guardar
           </button>
@@ -1151,6 +1074,7 @@ export default function Home() {
                 <h2>Nuevo movimiento</h2>
               </div>
 
+              <fieldset className="form-fieldset" disabled={!interactive}>
               <div className="segmented" role="group" aria-label="Tipo de movimiento">
                 <button
                   className={type === "expense" ? "active" : ""}
@@ -1214,6 +1138,7 @@ export default function Home() {
                 <Plus aria-hidden="true" size={18} />
                 Anadir movimiento
               </button>
+              </fieldset>
             </form>
 
             <section className="panel list-panel" aria-label="Listado de movimientos">
@@ -1247,8 +1172,9 @@ export default function Home() {
                       </strong>
                       <button
                         className="icon-button"
+                        disabled={!interactive}
                         type="button"
-                        onClick={() => removeTransaction(transaction.id)}
+                        onClick={() => void removeTransaction(transaction.id)}
                         aria-label={`Eliminar ${transaction.description}`}
                         title="Eliminar"
                       >
@@ -1269,6 +1195,7 @@ export default function Home() {
               {periodSummaries.map(({ period, summary }) => (
                 <button
                   className={period === selectedPeriod ? "month-row active" : "month-row"}
+                  disabled={!interactive}
                   key={period}
                   type="button"
                   onClick={() => selectPeriod(period)}
@@ -1337,4 +1264,12 @@ export default function Home() {
       )}
     </main>
   );
+}
+
+export default function Home() {
+  if (!supabase) {
+    return <MissingSupabase />;
+  }
+
+  return <FinanceApp />;
 }
