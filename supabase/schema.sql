@@ -1,3 +1,5 @@
+-- b
+
 create table if not exists public.finance_settings (
   user_id uuid primary key references auth.users(id) on delete cascade,
   payday_day smallint not null default 1 check (payday_day between 1 and 31),
