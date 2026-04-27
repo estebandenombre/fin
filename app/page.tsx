@@ -383,12 +383,75 @@ function MissingSupabase() {
       <section className="panel missing-supabase" aria-label="Configuracion requerida">
         <h1>Falta configurar Supabase</h1>
         <p>
-          Anade en <code>.env.local</code>: <code>NEXT_PUBLIC_SUPABASE_URL</code> y{" "}
-          <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code>. Reinicia el servidor despues de guardar.
+          Anade en <code>.env.local</code> la URL del proyecto y una clave publica. Reinicia <code>npm run dev</code>{" "}
+          despues de guardar.
         </p>
+        <ul className="missing-supabase-list">
+          <li>
+            <code>NEXT_PUBLIC_SUPABASE_URL</code> (Project Settings &gt; API &gt; Project URL)
+          </li>
+          <li>
+            Clave de cliente: <code>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY</code> (sb_publishable_…) <strong>o</strong>{" "}
+            <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> (JWT largo, pestaña Legacy API Keys &gt; anon public)
+          </li>
+        </ul>
       </section>
     </main>
   );
+}
+
+function connectionFailureText(error: unknown): string {
+  const pieces: string[] = [];
+
+  if (error && typeof error === "object") {
+    const record = error as {
+      message?: string;
+      details?: string;
+      hint?: string;
+      code?: string;
+    };
+
+    if (record.message) {
+      pieces.push(record.message);
+    }
+
+    if (record.details && record.details !== record.message) {
+      pieces.push(record.details);
+    }
+
+    if (record.hint) {
+      pieces.push(record.hint);
+    }
+
+    if (record.code) {
+      pieces.push(`(codigo ${record.code})`);
+    }
+  } else if (error instanceof Error) {
+    pieces.push(error.message);
+  } else if (error !== undefined && error !== null) {
+    pieces.push(String(error));
+  }
+
+  const base = pieces.filter(Boolean).join(" — ") || "Error desconocido al conectar con Supabase.";
+  const low = base.toLowerCase();
+
+  if (low.includes("anonymous") || low.includes("anon sign")) {
+    return `${base}
+
+→ Esta app usa login anonimo. En Supabase: Authentication → Providers → Anonymous → activar "Enable Anonymous sign-ins".`;
+  }
+
+  if (
+    low.includes("invalid api key") ||
+    low.includes("jwt") ||
+    (low.includes("invalid") && low.includes("key"))
+  ) {
+    return `${base}
+
+→ Revisa Project Settings → API: copia la clave publishable o la anon (JWT). Usa NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY o NEXT_PUBLIC_SUPABASE_ANON_KEY en .env.local.`;
+  }
+
+  return base;
 }
 
 function FinanceApp() {
@@ -404,6 +467,7 @@ function FinanceApp() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("loading");
   const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
   const [bootstrapNonce, setBootstrapNonce] = useState(0);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
@@ -418,6 +482,7 @@ function FinanceApp() {
 
     async function bootstrap() {
       setSyncStatus("loading");
+      setConnectionError(null);
 
       try {
         const sessionResult = await db.auth.getSession();
@@ -445,7 +510,7 @@ function FinanceApp() {
 
         const settingsResult = await db
           .from("finance_settings")
-          .select("payday_day, selected_period")
+          .select("payday_day")
           .eq("user_id", userId)
           .maybeSingle();
 
@@ -454,8 +519,7 @@ function FinanceApp() {
         }
 
         const nextPaydayDay = clampPaydayDay(settingsResult.data?.payday_day ?? 1);
-        const remoteSelectedPeriod = settingsResult.data?.selected_period;
-        const nextPeriod = isMonthKey(remoteSelectedPeriod) ? remoteSelectedPeriod : currentMonth();
+        const nextPeriod = getPeriodKeyForDate(todayInputValue(), nextPaydayDay);
 
         if (cancelled) {
           return;
@@ -471,7 +535,6 @@ function FinanceApp() {
           const settingsUpsert = await db.from("finance_settings").upsert({
             user_id: userId,
             payday_day: nextPaydayDay,
-            selected_period: nextPeriod,
           });
 
           if (settingsUpsert.error) {
@@ -505,11 +568,13 @@ function FinanceApp() {
         }
 
         if (!cancelled) {
+          setConnectionError(null);
           setSyncStatus("synced");
         }
-      } catch {
+      } catch (error: unknown) {
         if (!cancelled) {
           setSupabaseUserId(null);
+          setConnectionError(connectionFailureText(error));
           setSyncStatus("error");
         }
       }
@@ -666,7 +731,6 @@ function FinanceApp() {
       {
         user_id: supabaseUserId,
         payday_day: nextPaydayDay,
-        selected_period: nextPeriod,
       },
       { onConflict: "user_id" },
     );
@@ -773,6 +837,11 @@ function FinanceApp() {
                 Reintentar conexion
               </button>
             ) : null}
+            {syncStatus === "error" && connectionError ? (
+              <pre className="connection-error" role="alert">
+                {connectionError}
+              </pre>
+            ) : null}
           </div>
           <h1>Finanzas</h1>
         </div>
@@ -845,7 +914,7 @@ function FinanceApp() {
             onClick={() => void savePeriodSettings()}
           >
             <Save aria-hidden="true" size={17} />
-            Guardar
+            Guardar día de cobro
           </button>
         </div>
       </section>

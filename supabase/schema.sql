@@ -1,4 +1,6 @@
--- b
+-- Esquema completo (instalaciones nuevas). La app solo sincroniza payday_day; selected_period
+-- queda como columna opcional (valor por defecto en BD). Si la tabla ya existia sin selected_period,
+-- el ALTER siguiente la corrige; tambien puedes ejecutar supabase/migrations/20260427120000_add_selected_period.sql
 
 create table if not exists public.finance_settings (
   user_id uuid primary key references auth.users(id) on delete cascade,
