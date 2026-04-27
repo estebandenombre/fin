@@ -4,9 +4,11 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownCircle,
   ArrowUpCircle,
+  Banknote,
   CalendarDays,
   ChartSpline,
   Plus,
+  Save,
   Trash2,
   Wallet,
 } from "lucide-react";
@@ -29,6 +31,7 @@ type Transaction = {
 
 type StoredState = {
   paydayDay?: number;
+  selectedPeriod?: string;
   transactions: Transaction[];
 };
 
@@ -89,6 +92,10 @@ function todayInputValue() {
 
 function currentMonth() {
   return todayInputValue().slice(0, 7);
+}
+
+function isMonthKey(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}$/.test(value);
 }
 
 function parseMonthKey(month: string) {
@@ -427,6 +434,8 @@ export default function Home() {
   const initialPeriod = getPeriodKeyForDate(todayInputValue(), initialPaydayDay);
   const [selectedPeriod, setSelectedPeriod] = useState(initialPeriod);
   const [paydayDay, setPaydayDay] = useState(initialPaydayDay);
+  const [draftSelectedPeriod, setDraftSelectedPeriod] = useState(initialPeriod);
+  const [draftPaydayDay, setDraftPaydayDay] = useState(String(initialPaydayDay));
   const [activeView, setActiveView] = useState<ActiveView>("period");
   const [activeChart, setActiveChart] = useState<ActiveChart>("flow");
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("local");
@@ -456,10 +465,14 @@ export default function Home() {
         if (isStoredState(parsedValue)) {
           const nextPaydayDay = clampPaydayDay(parsedValue.paydayDay ?? 1);
           const nextTransactions = normalizeTransactions(parsedValue.transactions, nextPaydayDay);
-          const nextPeriod = getPeriodKeyForDate(todayInputValue(), nextPaydayDay);
+          const nextPeriod = isMonthKey(parsedValue.selectedPeriod)
+            ? parsedValue.selectedPeriod
+            : getPeriodKeyForDate(todayInputValue(), nextPaydayDay);
 
           setPaydayDay(nextPaydayDay);
           setSelectedPeriod(nextPeriod);
+          setDraftPaydayDay(String(nextPaydayDay));
+          setDraftSelectedPeriod(nextPeriod);
           setMovementDate(getDefaultMovementDate(nextPeriod, nextPaydayDay));
           setTransactions(nextTransactions);
         }
@@ -508,7 +521,7 @@ export default function Home() {
 
         const settingsResult = await supabase
           .from("finance_settings")
-          .select("payday_day")
+          .select("payday_day, selected_period")
           .eq("user_id", userId)
           .maybeSingle();
 
@@ -517,16 +530,25 @@ export default function Home() {
         }
 
         const nextPaydayDay = clampPaydayDay(settingsResult.data?.payday_day ?? paydayDay);
-        const nextPeriod = getPeriodKeyForDate(todayInputValue(), nextPaydayDay);
+        const remoteSelectedPeriod = settingsResult.data?.selected_period;
+        const nextPeriod = isMonthKey(remoteSelectedPeriod)
+          ? remoteSelectedPeriod
+          : selectedPeriod;
 
         setPaydayDay(nextPaydayDay);
         setSelectedPeriod(nextPeriod);
+        setDraftPaydayDay(String(nextPaydayDay));
+        setDraftSelectedPeriod(nextPeriod);
         setMovementDate(getDefaultMovementDate(nextPeriod, nextPaydayDay));
 
         if (!settingsResult.data) {
           const settingsUpsert = await supabase
             .from("finance_settings")
-            .upsert({ user_id: userId, payday_day: nextPaydayDay });
+            .upsert({
+              user_id: userId,
+              payday_day: nextPaydayDay,
+              selected_period: nextPeriod,
+            });
 
           if (settingsUpsert.error) {
             throw settingsUpsert.error;
@@ -583,30 +605,11 @@ export default function Home() {
       return;
     }
 
-    window.localStorage.setItem(storageKey, JSON.stringify({ paydayDay, transactions }));
-  }, [hasLoadedStorage, paydayDay, transactions]);
-
-  useEffect(() => {
-    if (!hasLoadedStorage || !supabase || !supabaseUserId) {
-      return;
-    }
-
-    async function saveSettings() {
-      if (!supabase || !supabaseUserId) {
-        return;
-      }
-
-      const result = await supabase
-        .from("finance_settings")
-        .upsert({ user_id: supabaseUserId, payday_day: paydayDay });
-
-      if (result.error) {
-        markSupabaseUnavailable(setSyncStatus);
-      }
-    }
-
-    void saveSettings();
-  }, [hasLoadedStorage, paydayDay, supabaseUserId]);
+    window.localStorage.setItem(
+      storageKey,
+      JSON.stringify({ paydayDay, selectedPeriod, transactions }),
+    );
+  }, [hasLoadedStorage, paydayDay, selectedPeriod, transactions]);
 
   const periodTransactions = useMemo(() => {
     return transactions.filter(
@@ -727,16 +730,47 @@ export default function Home() {
 
   function selectPeriod(period: string) {
     setSelectedPeriod(period);
+    setDraftSelectedPeriod(period);
     setMovementDate(getDefaultMovementDate(period, paydayDay));
   }
 
   function updatePaydayDay(value: string) {
-    const nextPaydayDay = clampPaydayDay(Number(value));
-    const nextPeriod = getPeriodKeyForDate(todayInputValue(), nextPaydayDay);
+    setDraftPaydayDay(value);
+  }
+
+  async function savePeriodSettings() {
+    const nextPaydayDay = clampPaydayDay(Number(draftPaydayDay));
+    const nextPeriod = isMonthKey(draftSelectedPeriod)
+      ? draftSelectedPeriod
+      : getPeriodKeyForDate(todayInputValue(), nextPaydayDay);
 
     setPaydayDay(nextPaydayDay);
     setSelectedPeriod(nextPeriod);
+    setDraftPaydayDay(String(nextPaydayDay));
+    setDraftSelectedPeriod(nextPeriod);
     setMovementDate(getDefaultMovementDate(nextPeriod, nextPaydayDay));
+
+    if (!supabase || !supabaseUserId) {
+      return;
+    }
+
+    setSyncStatus("syncing");
+
+    const result = await supabase.from("finance_settings").upsert(
+      {
+        user_id: supabaseUserId,
+        payday_day: nextPaydayDay,
+        selected_period: nextPeriod,
+      },
+      { onConflict: "user_id" },
+    );
+
+    if (result.error) {
+      markSupabaseUnavailable(setSyncStatus);
+      return;
+    }
+
+    setSyncStatus("synced");
   }
 
   async function addTransaction(event: FormEvent<HTMLFormElement>) {
@@ -764,6 +798,7 @@ export default function Home() {
     setTransactions((current) => [optimisticTransaction, ...current]);
 
     setSelectedPeriod(transactionPeriod);
+    setDraftSelectedPeriod(transactionPeriod);
     setDescription("");
     setAmount("");
     setCategory("General");
@@ -826,27 +861,6 @@ export default function Home() {
           <h1>Finanzas</h1>
         </div>
         <div className="topbar-tools">
-          <div className="period-controls" aria-label="Configuracion del periodo">
-            <label className="control-field month-control">
-              <CalendarDays aria-hidden="true" size={18} />
-              <span>Periodo</span>
-              <input
-                type="month"
-                value={selectedPeriod}
-                onChange={(event) => selectPeriod(event.target.value)}
-              />
-            </label>
-            <label className="control-field payday-control">
-              <span>Dia de cobro</span>
-              <input
-                max="31"
-                min="1"
-                type="number"
-                value={paydayDay}
-                onChange={(event) => updatePaydayDay(event.target.value)}
-              />
-            </label>
-          </div>
           <div className={`balance ${visibleTotals.balance >= 0 ? "positive" : "negative"}`}>
             <div className="balance-icon">
               <Wallet aria-hidden="true" size={23} />
@@ -860,26 +874,58 @@ export default function Home() {
         </div>
       </section>
 
-      <div className="tabs" role="tablist" aria-label="Vista de finanzas">
-        <button
-          aria-selected={activeView === "period"}
-          className={activeView === "period" ? "active" : ""}
-          role="tab"
-          type="button"
-          onClick={() => setActiveView("period")}
-        >
-          Periodo
-        </button>
-        <button
-          aria-selected={activeView === "global"}
-          className={activeView === "global" ? "active" : ""}
-          role="tab"
-          type="button"
-          onClick={() => setActiveView("global")}
-        >
-          Global
-        </button>
-      </div>
+      <section className="toolbar-stack" aria-label="Vista y periodo">
+        <div className="tabs toolbar-tabs" role="tablist" aria-label="Vista de finanzas">
+          <button
+            aria-selected={activeView === "period"}
+            className={activeView === "period" ? "active" : ""}
+            role="tab"
+            type="button"
+            onClick={() => setActiveView("period")}
+          >
+            Periodo
+          </button>
+          <button
+            aria-selected={activeView === "global"}
+            className={activeView === "global" ? "active" : ""}
+            role="tab"
+            type="button"
+            onClick={() => setActiveView("global")}
+          >
+            Global
+          </button>
+        </div>
+        <div className="period-controls period-controls--stacked" aria-label="Configuracion del periodo">
+          <div className="period-controls-fields">
+            <label className="control-field month-control">
+              <CalendarDays aria-hidden="true" size={18} />
+              <span>Periodo</span>
+              <input
+                type="month"
+                value={draftSelectedPeriod}
+                onChange={(event) => setDraftSelectedPeriod(event.target.value)}
+              />
+            </label>
+            <label className="control-field payday-control">
+              <Banknote aria-hidden="true" size={18} />
+              <span>Día de cobro</span>
+              <input
+                max="31"
+                min="1"
+                type="number"
+                inputMode="numeric"
+                aria-label="Día del mes en que cobras"
+                value={draftPaydayDay}
+                onChange={(event) => updatePaydayDay(event.target.value)}
+              />
+            </label>
+          </div>
+          <button className="settings-save" type="button" onClick={savePeriodSettings}>
+            <Save aria-hidden="true" size={17} />
+            Guardar
+          </button>
+        </div>
+      </section>
 
       <section className="summary-grid" aria-label="Resumen financiero">
         <article className="metric">
@@ -958,8 +1004,8 @@ export default function Home() {
                   <svg
                     aria-hidden="true"
                     className="flow-svg"
-                    preserveAspectRatio="none"
-                    style={{ height: flowSvgHeight }}
+                    preserveAspectRatio="xMidYMid meet"
+                    style={{ aspectRatio: `900 / ${flowSvgHeight}` }}
                     viewBox={`0 0 900 ${flowSvgHeight}`}
                   >
                     <rect className="flow-node income-node" x="24" y="32" width="190" height="76" rx="8" />
@@ -1010,26 +1056,33 @@ export default function Home() {
 
           {activeChart === "trend" && (
             <>
-              <div className="trend-chart">
-                {trendChartItems.map(({ period, summary }) => (
-                  <article className="trend-column" key={period}>
-                    <div className="trend-bars" aria-hidden="true">
-                      <span
-                        className="trend-bar income-bar"
-                        style={{ height: getBarWidth(summary.income, trendMaxValue) }}
-                      />
-                      <span
-                        className="trend-bar expense-bar"
-                        style={{ height: getBarWidth(summary.expense, trendMaxValue) }}
-                      />
-                      <span
-                        className={summary.balance >= 0 ? "trend-bar saving-bar" : "trend-bar gap-bar"}
-                        style={{ height: getBarWidth(Math.abs(summary.balance), trendMaxValue) }}
-                      />
-                    </div>
-                    <strong>{formatPeriodCompact(period)}</strong>
-                  </article>
-                ))}
+              <div className="trend-chart-scroll">
+                <div
+                  className="trend-chart"
+                  style={{
+                    gridTemplateColumns: `repeat(${Math.max(trendChartItems.length, 1)}, minmax(56px, 1fr))`,
+                  }}
+                >
+                  {trendChartItems.map(({ period, summary }) => (
+                    <article className="trend-column" key={period}>
+                      <div className="trend-bars" aria-hidden="true">
+                        <span
+                          className="trend-bar income-bar"
+                          style={{ height: getBarWidth(summary.income, trendMaxValue) }}
+                        />
+                        <span
+                          className="trend-bar expense-bar"
+                          style={{ height: getBarWidth(summary.expense, trendMaxValue) }}
+                        />
+                        <span
+                          className={summary.balance >= 0 ? "trend-bar saving-bar" : "trend-bar gap-bar"}
+                          style={{ height: getBarWidth(Math.abs(summary.balance), trendMaxValue) }}
+                        />
+                      </div>
+                      <strong>{formatPeriodCompact(period)}</strong>
+                    </article>
+                  ))}
+                </div>
               </div>
 
               <div className="chart-key">
