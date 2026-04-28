@@ -1,16 +1,19 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownCircle,
   ArrowDownUp,
   ArrowLeft,
   ArrowUpCircle,
+  CalendarDays,
   ChartSpline,
   ChevronDown,
   LayoutDashboard,
   ListFilter,
+  LogOut,
   Pencil,
+  PiggyBank,
   Plus,
   Save,
   Tag,
@@ -29,6 +32,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
 type TransactionType = "income" | "expense";
@@ -57,6 +61,18 @@ type FinanceTransactionRow = {
   category: string;
   period: string;
   transaction_date: string;
+};
+
+type FinanceBudgetRow = {
+  period: string;
+  category: string;
+  amount: number | string;
+};
+
+type BudgetRecord = {
+  period: string;
+  category: string;
+  amount: number;
 };
 
 type Summary = {
@@ -93,12 +109,12 @@ const currency = new Intl.NumberFormat("es-ES", {
   currency: "EUR",
 });
 
-const CHART_INCOME = "#2f7d5b";
-const CHART_EXPENSE = "#b54848";
-const CHART_ACCENT = "#2b5f75";
-const CHART_LINE = "#dfe4da";
-/** Balance acumulado (ingresos − gastos), distinto del verde y del rojo. */
-const CHART_BALANCE = "#6b4f9e";
+const CHART_INCOME = "#15803d";
+const CHART_EXPENSE = "#b91c1c";
+const CHART_ACCENT = "#737373";
+const CHART_LINE = "#e8e8e6";
+/** Balance acumulado (ingresos − gastos), tono neutro para no competir con ingreso/gasto. */
+const CHART_BALANCE = "#64748b";
 
 function TrendEvolutionTooltip({
   active,
@@ -152,7 +168,9 @@ function BarDistributionTooltip({
 }: {
   active?: boolean;
   label?: string;
-  payload?: Array<{ payload?: { total: number; movimientos?: number; veces?: number } }>;
+  payload?: Array<{
+    payload?: { total: number; movimientos?: number; veces?: number; budget?: number | null };
+  }>;
 }) {
   if (!active || !label || !payload?.length) {
     return null;
@@ -161,10 +179,27 @@ function BarDistributionTooltip({
   if (!row) {
     return null;
   }
+  const budget =
+    row.budget != null && Number.isFinite(row.budget) && row.budget > 0 ? row.budget : null;
+  const remaining = budget != null ? budget - row.total : null;
   return (
     <div className="chart-tooltip">
       <strong>{label}</strong>
       <div>Total: {currency.format(row.total)}</div>
+      {budget != null ? (
+        <>
+          <div className="chart-tooltip-meta">Presupuesto: {currency.format(budget)}</div>
+          <div
+            className={`chart-tooltip-meta${remaining !== null && remaining < 0 ? " chart-tooltip-meta--warn" : ""}`}
+          >
+            {remaining !== null && remaining < 0
+              ? `Por encima: ${currency.format(-remaining)}`
+              : remaining !== null
+                ? `Restante: ${currency.format(remaining)}`
+                : null}
+          </div>
+        </>
+      ) : null}
       {row.movimientos != null ? (
         <div className="chart-tooltip-meta">{row.movimientos} movimientos</div>
       ) : null}
@@ -442,6 +477,21 @@ function parsePositiveNumber(value: string) {
   return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : null;
 }
 
+function parseBudgetInput(value: string): { kind: "amount"; amount: number } | { kind: "clear" } | { kind: "invalid" } {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return { kind: "clear" };
+  }
+  const parsedValue = Number(trimmed.replace(",", "."));
+  if (!Number.isFinite(parsedValue) || parsedValue < 0) {
+    return { kind: "invalid" };
+  }
+  if (parsedValue === 0) {
+    return { kind: "clear" };
+  }
+  return { kind: "amount", amount: parsedValue };
+}
+
 function createSummary(transactions: Transaction[]): Summary {
   return transactions.reduce(
     (summary, transaction) => {
@@ -615,6 +665,14 @@ function mapTransactionRow(row: FinanceTransactionRow): Transaction {
   };
 }
 
+function mapBudgetRow(row: FinanceBudgetRow): BudgetRecord {
+  return {
+    period: row.period,
+    category: row.category,
+    amount: Number(row.amount),
+  };
+}
+
 function createTransactionPayload(transaction: Transaction, userId: string) {
   return {
     user_id: userId,
@@ -685,10 +743,14 @@ function connectionFailureText(error: unknown): string {
   const base = pieces.filter(Boolean).join(" — ") || "Error desconocido al conectar con Supabase.";
   const low = base.toLowerCase();
 
-  if (low.includes("anonymous") || low.includes("anon sign")) {
+  if (
+    low.includes("invalid login credentials") ||
+    low.includes("invalid_credentials") ||
+    low.includes("invalid email or password")
+  ) {
     return `${base}
 
-→ Esta app usa login anonimo. En Supabase: Authentication → Providers → Anonymous → activar "Enable Anonymous sign-ins".`;
+→ Comprueba correo y contrasena. Si acabas de registrarte, puede que debas confirmar el correo antes de poder entrar (Authentication → Providers → Email en Supabase).`;
   }
 
   if (
@@ -704,6 +766,129 @@ function connectionFailureText(error: unknown): string {
   return base;
 }
 
+function UserAuthPanel({ db }: { db: SupabaseClient }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [busy, setBusy] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLocalError(null);
+    setInfo(null);
+
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) {
+      setLocalError("Introduce correo y contrasena.");
+      return;
+    }
+
+    if (password.length < 6) {
+      setLocalError("La contrasena debe tener al menos 6 caracteres.");
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      if (mode === "login") {
+        const { error } = await db.auth.signInWithPassword({
+          email: trimmedEmail,
+          password,
+        });
+        if (error) {
+          throw error;
+        }
+      } else {
+        const { data, error } = await db.auth.signUp({
+          email: trimmedEmail,
+          password,
+        });
+        if (error) {
+          throw error;
+        }
+        if (!data.session) {
+          setInfo(
+            "Si tu proyecto requiere confirmar el correo, abre el enlace del mensaje y luego vuelve a iniciar sesion aqui.",
+          );
+        }
+      }
+    } catch (err: unknown) {
+      setLocalError(connectionFailureText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="shell">
+      <section className="panel auth-panel" aria-label="Inicio de sesion">
+        <p className="eyebrow">Finanzas</p>
+        <h1>{mode === "login" ? "Entrar" : "Crear cuenta"}</h1>
+        <p className="auth-lead">
+          Tus movimientos se guardan vinculados a tu usuario. Usa el mismo correo en cada dispositivo.
+        </p>
+
+        {localError ? (
+          <p className="auth-error" role="alert">
+            {localError}
+          </p>
+        ) : null}
+        {info ? (
+          <p className="auth-info" role="status">
+            {info}
+          </p>
+        ) : null}
+
+        <form className="auth-form" onSubmit={(e) => void handleSubmit(e)}>
+          <label htmlFor="auth-email">
+            Correo
+            <input
+              autoComplete="email"
+              id="auth-email"
+              name="email"
+              onChange={(e) => setEmail(e.target.value)}
+              type="email"
+              value={email}
+            />
+          </label>
+          <label htmlFor="auth-password">
+            Contrasena
+            <input
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              id="auth-password"
+              name="password"
+              minLength={6}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              value={password}
+            />
+          </label>
+          <div className="auth-form-actions">
+            <button className="auth-primary" disabled={busy} type="submit">
+              {busy ? "Espera…" : mode === "login" ? "Entrar" : "Registrarse"}
+            </button>
+            <button
+              className="auth-secondary"
+              disabled={busy}
+              type="button"
+              onClick={() => {
+                setMode((current) => (current === "login" ? "register" : "login"));
+                setLocalError(null);
+                setInfo(null);
+              }}
+            >
+              {mode === "login" ? "Crear cuenta" : "Ya tengo cuenta"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </main>
+  );
+}
+
 function FinanceApp() {
   const db = supabase!;
   const initialPaydayDay = 1;
@@ -717,9 +902,13 @@ function FinanceApp() {
   const [flowExpenseGrouping, setFlowExpenseGrouping] = useState<FlowExpenseGrouping>("category");
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("loading");
   const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
-  const [bootstrapNonce, setBootstrapNonce] = useState(0);
+  const [authPhase, setAuthPhase] = useState<"unknown" | "guest" | "user">("unknown");
+  const loadGenRef = useRef(0);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [budgetRecords, setBudgetRecords] = useState<BudgetRecord[]>([]);
+  const [budgetInputs, setBudgetInputs] = useState<Record<string, string>>({});
+  const [budgetPanelCollapsed, setBudgetPanelCollapsed] = useState(true);
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [type, setType] = useState<TransactionType>("expense");
@@ -742,6 +931,7 @@ function FinanceApp() {
   }
 
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     setMovementFilterType("all");
     setMovementFilterCategory("");
     setMovementSearch("");
@@ -752,39 +942,27 @@ function FinanceApp() {
     setType("expense");
     setCategory("General");
     setMovementDate(getDefaultMovementDate(selectedPeriod, paydayDay));
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [paydayDay, selectedPeriod]);
 
   useEffect(() => {
-    let cancelled = false;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    const next: Record<string, string> = {};
+    for (const cat of EXPENSE_CATEGORIES) {
+      const rec = budgetRecords.find((r) => r.period === selectedPeriod && r.category === cat);
+      next[cat] = rec && rec.amount > 0 ? String(rec.amount) : "";
+    }
+    setBudgetInputs(next);
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [budgetRecords, selectedPeriod]);
 
-    async function bootstrap() {
+  const loadUserFinanceData = useCallback(
+    async (userId: string) => {
+      const generation = ++loadGenRef.current;
       setSyncStatus("loading");
       setConnectionError(null);
 
       try {
-        const sessionResult = await db.auth.getSession();
-        let userId = sessionResult.data.session?.user.id;
-
-        if (!userId) {
-          const signInResult = await db.auth.signInAnonymously();
-
-          if (signInResult.error) {
-            throw signInResult.error;
-          }
-
-          userId = signInResult.data.user?.id;
-        }
-
-        if (!userId) {
-          throw new Error("No Supabase user id");
-        }
-
-        if (cancelled) {
-          return;
-        }
-
-        setSupabaseUserId(userId);
-
         const settingsResult = await db
           .from("finance_settings")
           .select("payday_day")
@@ -798,7 +976,7 @@ function FinanceApp() {
         const nextPaydayDay = clampPaydayDay(settingsResult.data?.payday_day ?? 1);
         const nextPeriod = getPeriodKeyForDate(todayInputValue(), nextPaydayDay);
 
-        if (cancelled) {
+        if (generation !== loadGenRef.current) {
           return;
         }
 
@@ -834,7 +1012,7 @@ function FinanceApp() {
           mapTransactionRow(row as FinanceTransactionRow),
         );
 
-        if (cancelled) {
+        if (generation !== loadGenRef.current) {
           return;
         }
 
@@ -844,31 +1022,119 @@ function FinanceApp() {
           setTransactions([]);
         }
 
-        if (!cancelled) {
-          setConnectionError(null);
-          setSyncStatus("synced");
-        }
-      } catch (error: unknown) {
-        if (!cancelled) {
-          setSupabaseUserId(null);
-          setConnectionError(connectionFailureText(error));
-          setSyncStatus("error");
-        }
-      }
-    }
+        const budgetsResult = await db
+          .from("finance_budgets")
+          .select("period, category, amount")
+          .eq("user_id", userId);
 
-    void bootstrap();
+        if (budgetsResult.error) {
+          throw budgetsResult.error;
+        }
+
+        const remoteBudgets = (budgetsResult.data ?? []).map((row) => mapBudgetRow(row as FinanceBudgetRow));
+
+        if (generation !== loadGenRef.current) {
+          return;
+        }
+
+        setBudgetRecords(remoteBudgets);
+
+        setConnectionError(null);
+        setSyncStatus("synced");
+      } catch (error: unknown) {
+        if (generation !== loadGenRef.current) {
+          return;
+        }
+        setConnectionError(connectionFailureText(error));
+        setSyncStatus("error");
+      }
+    },
+    [db],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const {
+      data: { subscription },
+    } = db.auth.onAuthStateChange((event, session) => {
+      if (event === "TOKEN_REFRESHED") {
+        return;
+      }
+
+      void (async () => {
+        if (!session?.user) {
+          loadGenRef.current += 1;
+          if (cancelled) {
+            return;
+          }
+
+          setSupabaseUserId(null);
+          setTransactions([]);
+          setBudgetRecords([]);
+          const resetPeriod = getPeriodKeyForDate(todayInputValue(), initialPaydayDay);
+          setPaydayDay(initialPaydayDay);
+          setSelectedPeriod(resetPeriod);
+          setDraftPaydayDay(String(initialPaydayDay));
+          setDraftSelectedPeriod(resetPeriod);
+          setMovementDate(getDefaultMovementDate(resetPeriod, initialPaydayDay));
+          setGlobalSummaryOpen(false);
+          setEditingTransactionId(null);
+          setConnectionError(null);
+          setSyncStatus("loading");
+          setDescription("");
+          setAmount("");
+          setType("expense");
+          setCategory("General");
+          setAuthPhase("guest");
+          return;
+        }
+
+        const userId = session.user.id;
+        if (cancelled) {
+          return;
+        }
+
+        setSupabaseUserId(userId);
+        setAuthPhase("user");
+        await loadUserFinanceData(userId);
+      })();
+    });
 
     return () => {
       cancelled = true;
+      subscription.unsubscribe();
     };
-  }, [bootstrapNonce]);
+  }, [db, loadUserFinanceData, initialPaydayDay]);
 
   const periodTransactions = useMemo(() => {
     return transactions.filter(
       (transaction) => getPeriodKeyForDate(transaction.date, paydayDay) === selectedPeriod,
     );
   }, [paydayDay, selectedPeriod, transactions]);
+
+  const expenseSpentByCategory = useMemo(() => {
+    const spent = new Map<string, number>();
+    for (const transaction of periodTransactions) {
+      if (transaction.type !== "expense") {
+        continue;
+      }
+      const cat = categoryOrDefaultForType(transaction.category, "expense");
+      spent.set(cat, (spent.get(cat) ?? 0) + transaction.amount);
+    }
+    return spent;
+  }, [periodTransactions]);
+
+  const budgetAmountByCategory = useMemo(() => {
+    const amounts = new Map<string, number>();
+    for (const row of budgetRecords) {
+      if (row.period !== selectedPeriod) {
+        continue;
+      }
+      amounts.set(row.category, row.amount);
+    }
+    return amounts;
+  }, [budgetRecords, selectedPeriod]);
 
   const periodTransactionCategories = useMemo(() => {
     const unique = new Set<string>();
@@ -1081,8 +1347,9 @@ function FinanceApp() {
       name: shortenLabel(item.label),
       total: item.total,
       movimientos: item.count,
+      budget: budgetAmountByCategory.get(item.label) ?? null,
     }));
-  }, [categoryChartItems]);
+  }, [budgetAmountByCategory, categoryChartItems]);
 
   const topExpenseItems = useMemo(() => {
     return groupExpensesBy(visibleTransactions, (transaction) => transaction.description).slice(0, 5);
@@ -1146,6 +1413,67 @@ function FinanceApp() {
     setDraftSelectedPeriod(nextPeriod);
     setMovementDate(getDefaultMovementDate(nextPeriod, nextPaydayDay));
     setSyncStatus("synced");
+  }
+
+  async function saveBudgetsForPeriod() {
+    if (!supabaseUserId) {
+      setSyncStatus("error");
+      return;
+    }
+
+    setSyncStatus("syncing");
+
+    try {
+      setConnectionError(null);
+      for (const cat of EXPENSE_CATEGORIES) {
+        const parsed = parseBudgetInput(budgetInputs[cat] ?? "");
+        if (parsed.kind === "invalid") {
+          setConnectionError("Revisa los importes de presupuesto: solo numeros positivos o dejalos vacios.");
+          setSyncStatus("error");
+          return;
+        }
+
+        if (parsed.kind === "clear") {
+          const del = await db
+            .from("finance_budgets")
+            .delete()
+            .eq("user_id", supabaseUserId)
+            .eq("period", selectedPeriod)
+            .eq("category", cat);
+          if (del.error) {
+            throw del.error;
+          }
+        } else {
+          const upsert = await db.from("finance_budgets").upsert(
+            {
+              user_id: supabaseUserId,
+              period: selectedPeriod,
+              category: cat,
+              amount: parsed.amount,
+            },
+            { onConflict: "user_id,period,category" },
+          );
+          if (upsert.error) {
+            throw upsert.error;
+          }
+        }
+      }
+
+      const refreshed = await db
+        .from("finance_budgets")
+        .select("period, category, amount")
+        .eq("user_id", supabaseUserId);
+
+      if (refreshed.error) {
+        throw refreshed.error;
+      }
+
+      setBudgetRecords((refreshed.data ?? []).map((row) => mapBudgetRow(row as FinanceBudgetRow)));
+      setSyncStatus("synced");
+    } catch (error: unknown) {
+      setConnectionError(connectionFailureText(error));
+      setSyncStatus("error");
+    }
   }
 
   function resetMovementForm() {
@@ -1364,6 +1692,18 @@ function FinanceApp() {
     );
   }
 
+  if (authPhase === "unknown") {
+    return (
+      <main className="shell">
+        <p className="auth-loading">Cargando sesion…</p>
+      </main>
+    );
+  }
+
+  if (authPhase === "guest") {
+    return <UserAuthPanel db={db} />;
+  }
+
   const headingPeriod = isMonthKey(draftSelectedPeriod) ? draftSelectedPeriod : selectedPeriod;
 
   return (
@@ -1372,7 +1712,15 @@ function FinanceApp() {
         <div className="title-block">
           {syncStatus === "error" ? (
             <div className="title-block-status">
-              <button className="retry-bootstrap" type="button" onClick={() => setBootstrapNonce((n) => n + 1)}>
+              <button
+                className="retry-bootstrap"
+                type="button"
+                onClick={() => {
+                  if (supabaseUserId) {
+                    void loadUserFinanceData(supabaseUserId);
+                  }
+                }}
+              >
                 Reintentar conexion
               </button>
               {connectionError ? (
@@ -1399,6 +1747,10 @@ function FinanceApp() {
               </h1>
             )}
             <div className="title-block-actions">
+              <button className="sign-out-button" type="button" onClick={() => void db.auth.signOut()}>
+                <LogOut aria-hidden="true" size={17} />
+                Cerrar sesion
+              </button>
               {globalSummaryOpen ? (
                 <button
                   className="global-summary-back"
@@ -1462,6 +1814,20 @@ function FinanceApp() {
       {globalSummaryOpen ? null : (
       <section className="period-settings-row" aria-label="Configuracion del periodo">
         <div className="period-controls" aria-label="Periodo y dia de cobro">
+          <div className="period-controls-summary">
+            <span className="period-controls-summary__icon">
+              <CalendarDays aria-hidden="true" size={18} />
+            </span>
+            <div>
+              <span className="period-controls-summary__eyebrow">Periodo activo</span>
+              <strong>
+                {formatPeriod(
+                  isMonthKey(draftSelectedPeriod) ? draftSelectedPeriod : selectedPeriod,
+                  clampPaydayDay(Number(draftPaydayDay)),
+                )}
+              </strong>
+            </div>
+          </div>
           <div className="period-controls-fields">
             <label className="control-field month-control" htmlFor="field-period-month">
               <span className="control-field__label">Periodo</span>
@@ -1497,6 +1863,7 @@ function FinanceApp() {
             onClick={() => void savePeriodSettings()}
           >
             <Save aria-hidden="true" size={17} />
+            <span>Guardar</span>
           </button>
         </div>
       </section>
@@ -1518,6 +1885,94 @@ function FinanceApp() {
           </strong>
         </article>
       </section>
+
+      {!globalSummaryOpen ? (
+        <section
+          className={`panel budget-panel${budgetPanelCollapsed ? " budget-panel--collapsed" : ""}`}
+          aria-label="Presupuestos por categoria"
+        >
+          <div className="panel-heading budget-panel-heading">
+            <h2 className="budget-panel-title">
+              <PiggyBank aria-hidden="true" size={18} />
+              Presupuestos de gasto
+            </h2>
+            <div className="budget-panel-heading__actions">
+              <span className="list-panel-meta">{formatPeriod(selectedPeriod, paydayDay)}</span>
+              <button
+                aria-controls="budget-panel-body"
+                aria-expanded={!budgetPanelCollapsed}
+                className="budget-collapse-toggle"
+                type="button"
+                onClick={() => setBudgetPanelCollapsed((current) => !current)}
+              >
+                <ChevronDown
+                  aria-hidden="true"
+                  className={budgetPanelCollapsed ? "" : "budget-collapse-toggle__icon--open"}
+                  size={17}
+                />
+                <span>{budgetPanelCollapsed ? "Mostrar" : "Ocultar"}</span>
+              </button>
+            </div>
+          </div>
+          {!budgetPanelCollapsed ? (
+            <div className="budget-panel-body" id="budget-panel-body">
+              <p className="budget-panel-lead">
+                Define un tope por categoría. Se compara con los gastos de este periodo. Deja vacío el importe para
+                quitar el presupuesto de esa categoría.
+              </p>
+              <ul className="budget-rows">
+                {EXPENSE_CATEGORIES.map((cat) => {
+                  const spent = expenseSpentByCategory.get(cat) ?? 0;
+                  const cap = budgetAmountByCategory.get(cat) ?? 0;
+                  const pct = cap > 0 ? Math.min(100, (spent / cap) * 100) : 0;
+                  const over = cap > 0 && spent > cap;
+                  return (
+                    <li className="budget-row" key={cat}>
+                      <div className="budget-row__main">
+                        <span className="budget-row__cat">{cat}</span>
+                        <span className="budget-row__spent">
+                          Gastado: <strong>{currency.format(spent)}</strong>
+                        </span>
+                      </div>
+                      {cap > 0 ? (
+                        <div className={`budget-row__track${over ? " budget-row__track--over" : ""}`}>
+                          <div className="budget-row__fill" style={{ width: `${pct}%` }} />
+                        </div>
+                      ) : null}
+                      <label className="budget-row__field">
+                        <span className="visually-hidden">Presupuesto {cat}</span>
+                        <input
+                          disabled={!interactive}
+                          inputMode="decimal"
+                          min="0"
+                          step="0.01"
+                          type="number"
+                          placeholder="Sin tope"
+                          value={budgetInputs[cat] ?? ""}
+                          onChange={(event) =>
+                            setBudgetInputs((current) => ({ ...current, [cat]: event.target.value }))
+                          }
+                        />
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="budget-panel-footer">
+                <button
+                  className="primary-action"
+                  disabled={!interactive}
+                  type="button"
+                  onClick={() => void saveBudgetsForPeriod()}
+                >
+                  <Save aria-hidden="true" size={18} />
+                  Guardar presupuestos
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       {!globalSummaryOpen ? (
       <section className="panel charts-panel" aria-label="Graficas utiles">
