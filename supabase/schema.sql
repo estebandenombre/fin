@@ -33,6 +33,7 @@ drop policy if exists "Users can insert own settings" on public.finance_settings
 drop policy if exists "Users can update own settings" on public.finance_settings;
 drop policy if exists "Users can read own transactions" on public.finance_transactions;
 drop policy if exists "Users can insert own transactions" on public.finance_transactions;
+drop policy if exists "Users can update own transactions" on public.finance_transactions;
 drop policy if exists "Users can delete own transactions" on public.finance_transactions;
 
 create policy "Users can read own settings"
@@ -54,6 +55,11 @@ create policy "Users can read own transactions"
 
 create policy "Users can insert own transactions"
   on public.finance_transactions for insert
+  with check (auth.uid() = user_id);
+
+create policy "Users can update own transactions"
+  on public.finance_transactions for update
+  using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
 create policy "Users can delete own transactions"

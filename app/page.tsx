@@ -1,23 +1,43 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownCircle,
+  ArrowDownUp,
+  ArrowLeft,
   ArrowUpCircle,
-  Banknote,
-  CalendarDays,
   ChartSpline,
+  ChevronDown,
+  LayoutDashboard,
+  ListFilter,
+  Pencil,
   Plus,
   Save,
+  Tag,
   Trash2,
   Wallet,
 } from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { supabase } from "@/lib/supabase";
 
 type TransactionType = "income" | "expense";
-type ActiveView = "period" | "global";
 type ActiveChart = "flow" | "trend" | "category" | "top";
+type FlowExpenseGrouping = "category" | "none";
 type SyncStatus = "loading" | "syncing" | "synced" | "error";
+
+type MovementFilterType = "all" | TransactionType;
+type MovementListOrder = "recent" | "category" | "week";
 
 type Transaction = {
   id: number;
@@ -72,6 +92,118 @@ const currency = new Intl.NumberFormat("es-ES", {
   style: "currency",
   currency: "EUR",
 });
+
+const CHART_INCOME = "#2f7d5b";
+const CHART_EXPENSE = "#b54848";
+const CHART_ACCENT = "#2b5f75";
+const CHART_LINE = "#dfe4da";
+/** Balance acumulado (ingresos − gastos), distinto del verde y del rojo. */
+const CHART_BALANCE = "#6b4f9e";
+
+function TrendEvolutionTooltip({
+  active,
+  label,
+  payload,
+}: {
+  active?: boolean;
+  label?: string;
+  payload?: Array<{
+    dataKey?: string | number;
+    value?: number;
+    payload?: { dayFull?: string; diaIngresos?: number; diaGastos?: number };
+  }>;
+}) {
+  if (!active || !payload?.length) {
+    return null;
+  }
+  const row = payload[0]?.payload;
+  const ing = Number(payload.find((p) => p.dataKey === "ingresos")?.value ?? 0);
+  const gas = Number(payload.find((p) => p.dataKey === "gastos")?.value ?? 0);
+  const balancePoint = payload.find((p) => p.dataKey === "balance");
+  const resultado =
+    balancePoint?.value !== undefined ? Number(balancePoint.value) : ing - gas;
+  const dayFull = row?.dayFull;
+  const diaIng = row?.diaIngresos ?? 0;
+  const diaGas = row?.diaGastos ?? 0;
+  const hayMovimientoDia = diaIng > 0 || diaGas > 0;
+  return (
+    <div className="chart-tooltip">
+      <strong>{dayFull ?? label}</strong>
+      <div className="chart-tooltip-row chart-tooltip-row--income">
+        Ingresos acumulados: {currency.format(ing)}
+      </div>
+      <div className="chart-tooltip-row chart-tooltip-row--expense">
+        Gastos acumulados: {currency.format(gas)}
+      </div>
+      <div className="chart-tooltip-row chart-tooltip-row--balance">Balance acumulado: {currency.format(resultado)}</div>
+      {hayMovimientoDia ? (
+        <div className="chart-tooltip-meta">
+          Este día: +{currency.format(diaIng)} ing. · −{currency.format(diaGas)} gast.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BarDistributionTooltip({
+  active,
+  label,
+  payload,
+}: {
+  active?: boolean;
+  label?: string;
+  payload?: Array<{ payload?: { total: number; movimientos?: number; veces?: number } }>;
+}) {
+  if (!active || !label || !payload?.length) {
+    return null;
+  }
+  const row = payload[0]?.payload;
+  if (!row) {
+    return null;
+  }
+  return (
+    <div className="chart-tooltip">
+      <strong>{label}</strong>
+      <div>Total: {currency.format(row.total)}</div>
+      {row.movimientos != null ? (
+        <div className="chart-tooltip-meta">{row.movimientos} movimientos</div>
+      ) : null}
+      {row.veces != null ? <div className="chart-tooltip-meta">{row.veces} veces</div> : null}
+    </div>
+  );
+}
+
+const EXPENSE_CATEGORIES = [
+  "General",
+  "Comida",
+  "Casa",
+  "Transporte",
+  "Ocio",
+  "Salud",
+  "Educación",
+  "Servicios",
+  "Otros",
+] as const;
+
+const INCOME_CATEGORIES = [
+  "General",
+  "Nómina",
+  "Freelance",
+  "Inversiones",
+  "Reembolsos",
+  "Regalos",
+  "Otros",
+] as const;
+
+function categoriesForType(movementType: TransactionType): readonly string[] {
+  return movementType === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
+}
+
+function categoryOrDefaultForType(category: string, movementType: TransactionType) {
+  const normalized = category.trim() || "General";
+  const allowed = categoriesForType(movementType);
+  return allowed.includes(normalized) ? normalized : "General";
+}
 
 function padNumber(value: number) {
   return String(value).padStart(2, "0");
@@ -183,10 +315,126 @@ function formatPeriod(period: string, paydayDay: number) {
   return `${formatDateShort(start)} - ${formatDateShort(end)}`;
 }
 
+/** Título del mes de trabajo: mes y año por separado (tipografía distinta en la UI). */
+function formatMonthTitleParts(period: string): { month: string; year: string } {
+  const { year, monthIndex } = parseMonthKey(period);
+  const month = new Intl.DateTimeFormat("es-ES", { month: "long" }).format(
+    new Date(year, monthIndex, 1),
+  );
+  return {
+    month: month.replace(/^./u, (character) => character.toUpperCase()),
+    year: String(year),
+  };
+}
+
 function getDefaultMovementDate(period: string, paydayDay: number) {
   const today = todayInputValue();
   const todayPeriod = getPeriodKeyForDate(today, paydayDay);
   return todayPeriod === period ? today : getPeriodRange(period, paydayDay).startInput;
+}
+
+type TransactionCategoryGroup = {
+  categoryLabel: string;
+  items: Transaction[];
+  key: string;
+  type: TransactionType;
+};
+
+/** Agrupa todos los movimientos con el mismo tipo y categoría (no hace falta que sean consecutivos en la lista). */
+function groupByCategoryAndType(transactions: Transaction[]): TransactionCategoryGroup[] {
+  const bucket = new Map<string, Transaction[]>();
+
+  for (const transaction of transactions) {
+    const categoryLabel = transaction.category.trim() || "General";
+    const key = `${transaction.type}:${categoryLabel}`;
+    const existing = bucket.get(key);
+    if (existing) {
+      existing.push(transaction);
+    } else {
+      bucket.set(key, [transaction]);
+    }
+  }
+
+  return Array.from(bucket.entries()).map(([key, rawItems]) => {
+    const items = [...rawItems].sort((a, b) => {
+      if (a.date !== b.date) {
+        return a.date < b.date ? 1 : -1;
+      }
+      return b.id - a.id;
+    });
+    const categoryLabel = items[0].category.trim() || "General";
+    const type = items[0].type;
+    return { categoryLabel, items, key, type };
+  });
+}
+
+function maxDateInCategoryGroup(group: TransactionCategoryGroup): string {
+  return group.items.reduce((max, row) => (row.date > max ? row.date : max), group.items[0].date);
+}
+
+function sortCategoryGroups(groups: TransactionCategoryGroup[], mode: "recent" | "category"): void {
+  groups.sort((a, b) => {
+    if (mode === "recent") {
+      const maxA = maxDateInCategoryGroup(a);
+      const maxB = maxDateInCategoryGroup(b);
+      if (maxA !== maxB) {
+        return maxA < maxB ? 1 : -1;
+      }
+      return a.key.localeCompare(b.key, "es");
+    }
+
+    const labelOrder = a.categoryLabel.localeCompare(b.categoryLabel, "es");
+    if (labelOrder !== 0) {
+      return labelOrder;
+    }
+
+    return a.type === b.type ? 0 : a.type === "expense" ? -1 : 1;
+  });
+}
+
+type MovementWeekSection = {
+  groups: TransactionCategoryGroup[];
+  heading: string;
+  weekStart: string;
+};
+
+/** Lunes como inicio de semana (común en ES). */
+function startOfWeekMonday(date: Date): Date {
+  const local = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dow = local.getDay();
+  const offset = dow === 0 ? -6 : 1 - dow;
+  local.setDate(local.getDate() + offset);
+  return local;
+}
+
+function buildMovementWeekSections(transactions: Transaction[]): MovementWeekSection[] {
+  const byWeek = new Map<string, Transaction[]>();
+
+  for (const transaction of transactions) {
+    const monday = startOfWeekMonday(inputValueToDate(transaction.date));
+    const weekKey = dateToInputValue(monday);
+    const list = byWeek.get(weekKey);
+    if (list) {
+      list.push(transaction);
+    } else {
+      byWeek.set(weekKey, [transaction]);
+    }
+  }
+
+  const weekKeys = Array.from(byWeek.keys()).sort((first, second) =>
+    first < second ? 1 : first > second ? -1 : 0,
+  );
+
+  return weekKeys.map((weekStart) => {
+    const weekTransactions = byWeek.get(weekStart)!;
+    const groups = groupByCategoryAndType(weekTransactions);
+    sortCategoryGroups(groups, "recent");
+    const mondayDate = inputValueToDate(weekStart);
+    const sundayDate = new Date(mondayDate);
+    sundayDate.setDate(sundayDate.getDate() + 6);
+    const heading = `${formatDateShort(mondayDate)} – ${formatDateShort(sundayDate)}`;
+    return { groups, heading, weekStart };
+  });
 }
 
 function parsePositiveNumber(value: string) {
@@ -214,7 +462,11 @@ function normalizeDescription(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function createFlowItems(transactions: Transaction[], summary: Summary): FlowItem[] {
+function createFlowItems(
+  transactions: Transaction[],
+  summary: Summary,
+  expenseGrouping: FlowExpenseGrouping,
+): FlowItem[] {
   const expenseGroups = new Map<string, FlowItem>();
 
   for (const transaction of transactions) {
@@ -222,13 +474,24 @@ function createFlowItems(transactions: Transaction[], summary: Summary): FlowIte
       continue;
     }
 
-    const label = transaction.category.trim() || "General";
-    const id = normalizeDescription(label);
-    const group = expenseGroups.get(id);
+    if (expenseGrouping === "category") {
+      const label = transaction.category.trim() || "General";
+      const id = normalizeDescription(label);
+      const group = expenseGroups.get(id);
 
-    if (group) {
-      group.total += transaction.amount;
+      if (group) {
+        group.total += transaction.amount;
+      } else {
+        expenseGroups.set(id, {
+          id,
+          label,
+          total: transaction.amount,
+          kind: "expense",
+        });
+      }
     } else {
+      const id = `expense-${transaction.id}`;
+      const label = transaction.description.trim() || "Sin descripción";
       expenseGroups.set(id, {
         id,
         label,
@@ -261,12 +524,14 @@ function createFlowItems(transactions: Transaction[], summary: Summary): FlowIte
   return items;
 }
 
-function getFlowStrokeWidth(value: number, maxValue: number) {
-  if (maxValue <= 0) {
-    return 8;
-  }
+/** Grosor máximo del conector (px); el grosor real es proporcional al importe: value / maxValue * esto. */
+const FLOW_PATH_MAX_STROKE = 40;
 
-  return Math.max(8, Math.min(30, 8 + (value / maxValue) * 22));
+function getFlowStrokeWidth(value: number, maxValue: number) {
+  if (maxValue <= 0 || value <= 0 || !Number.isFinite(value) || !Number.isFinite(maxValue)) {
+    return 0;
+  }
+  return (value / maxValue) * FLOW_PATH_MAX_STROKE;
 }
 
 function shortenLabel(value: string) {
@@ -362,21 +627,6 @@ function createTransactionPayload(transaction: Transaction, userId: string) {
   };
 }
 
-function getSyncLabel(status: SyncStatus) {
-  switch (status) {
-    case "synced":
-      return "Base de datos";
-    case "syncing":
-      return "Guardando";
-    case "loading":
-      return "Cargando";
-    case "error":
-      return "Error";
-    default:
-      return "";
-  }
-}
-
 function MissingSupabase() {
   return (
     <main className="shell">
@@ -462,8 +712,9 @@ function FinanceApp() {
   const [paydayDay, setPaydayDay] = useState(initialPaydayDay);
   const [draftSelectedPeriod, setDraftSelectedPeriod] = useState(initialPeriod);
   const [draftPaydayDay, setDraftPaydayDay] = useState(String(initialPaydayDay));
-  const [activeView, setActiveView] = useState<ActiveView>("period");
+  const [globalSummaryOpen, setGlobalSummaryOpen] = useState(false);
   const [activeChart, setActiveChart] = useState<ActiveChart>("flow");
+  const [flowExpenseGrouping, setFlowExpenseGrouping] = useState<FlowExpenseGrouping>("category");
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("loading");
   const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
   const [bootstrapNonce, setBootstrapNonce] = useState(0);
@@ -476,6 +727,32 @@ function FinanceApp() {
   const [movementDate, setMovementDate] = useState(() =>
     getDefaultMovementDate(initialPeriod, initialPaydayDay),
   );
+  const [movementFilterType, setMovementFilterType] = useState<MovementFilterType>("all");
+  const [movementFilterCategory, setMovementFilterCategory] = useState("");
+  const [movementSearch, setMovementSearch] = useState("");
+  const [movementFiltersOpen, setMovementFiltersOpen] = useState(false);
+  const [movementListOrder, setMovementListOrder] = useState<MovementListOrder>("recent");
+  const [editingTransactionId, setEditingTransactionId] = useState<number | null>(null);
+  const movementFormPanelRef = useRef<HTMLFormElement | null>(null);
+
+  function setMovementType(next: TransactionType) {
+    setType(next);
+    const allowed = categoriesForType(next);
+    setCategory((current) => (allowed.includes(current) ? current : "General"));
+  }
+
+  useEffect(() => {
+    setMovementFilterType("all");
+    setMovementFilterCategory("");
+    setMovementSearch("");
+    setMovementFiltersOpen(false);
+    setEditingTransactionId(null);
+    setDescription("");
+    setAmount("");
+    setType("expense");
+    setCategory("General");
+    setMovementDate(getDefaultMovementDate(selectedPeriod, paydayDay));
+  }, [paydayDay, selectedPeriod]);
 
   useEffect(() => {
     let cancelled = false;
@@ -593,6 +870,57 @@ function FinanceApp() {
     );
   }, [paydayDay, selectedPeriod, transactions]);
 
+  const periodTransactionCategories = useMemo(() => {
+    const unique = new Set<string>();
+    for (const transaction of periodTransactions) {
+      unique.add(transaction.category.trim() || "General");
+    }
+    return Array.from(unique).sort((first, second) => first.localeCompare(second, "es"));
+  }, [periodTransactions]);
+
+  const filteredPeriodTransactions = useMemo(() => {
+    const query = movementSearch.trim().toLowerCase();
+
+    return periodTransactions.filter((transaction) => {
+      if (movementFilterType !== "all" && transaction.type !== movementFilterType) {
+        return false;
+      }
+
+      const categoryLabel = transaction.category.trim() || "General";
+
+      if (movementFilterCategory && categoryLabel !== movementFilterCategory) {
+        return false;
+      }
+
+      if (query && !transaction.description.toLowerCase().includes(query)) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [
+    movementFilterCategory,
+    movementFilterType,
+    movementSearch,
+    periodTransactions,
+  ]);
+
+  const movementListRender = useMemo(() => {
+    if (movementListOrder === "week") {
+      return {
+        kind: "week" as const,
+        sections: buildMovementWeekSections(filteredPeriodTransactions),
+      };
+    }
+
+    const groups = groupByCategoryAndType(filteredPeriodTransactions);
+    sortCategoryGroups(groups, movementListOrder);
+    return { kind: "flat" as const, groups };
+  }, [filteredPeriodTransactions, movementListOrder]);
+
+  const hasActiveMovementFilters =
+    movementFilterType !== "all" || movementFilterCategory !== "" || movementSearch.trim() !== "";
+
   const totals = useMemo(() => {
     return createSummary(periodTransactions);
   }, [periodTransactions]);
@@ -601,12 +929,12 @@ function FinanceApp() {
     return createSummary(transactions);
   }, [transactions]);
 
-  const visibleTotals = activeView === "global" ? globalTotals : totals;
-  const visibleTransactions = activeView === "global" ? transactions : periodTransactions;
+  const visibleTotals = globalSummaryOpen ? globalTotals : totals;
+  const visibleTransactions = globalSummaryOpen ? transactions : periodTransactions;
 
   const flowItems = useMemo(() => {
-    return createFlowItems(visibleTransactions, visibleTotals);
-  }, [visibleTotals, visibleTransactions]);
+    return createFlowItems(visibleTransactions, visibleTotals, flowExpenseGrouping);
+  }, [flowExpenseGrouping, visibleTotals, visibleTransactions]);
 
   const flowMaxValue = useMemo(() => {
     return Math.max(visibleTotals.income, ...flowItems.map((item) => item.total), 1);
@@ -677,32 +1005,104 @@ function FinanceApp() {
       .slice(-6);
   }, [periodSummaries]);
 
-  const trendMaxValue = useMemo(() => {
-    return Math.max(
-      ...trendChartItems.flatMap(({ summary }) => [
-        summary.income,
-        summary.expense,
-        Math.abs(summary.balance),
-      ]),
-      1,
-    );
-  }, [trendChartItems]);
+  const dailyEvolutionChartData = useMemo(() => {
+    const { startInput, endInput } = getPeriodRange(selectedPeriod, paydayDay);
+    const start = inputValueToDate(startInput);
+    const end = inputValueToDate(endInput);
+    const byDay = new Map<string, { income: number; expense: number }>();
+
+    for (const transaction of periodTransactions) {
+      const day = transaction.date;
+      if (day < startInput || day > endInput) {
+        continue;
+      }
+      const bucket = byDay.get(day) ?? { income: 0, expense: 0 };
+      if (transaction.type === "income") {
+        bucket.income += transaction.amount;
+      } else {
+        bucket.expense += transaction.amount;
+      }
+      byDay.set(day, bucket);
+    }
+
+    const dayFormatter = new Intl.DateTimeFormat("es-ES", {
+      day: "numeric",
+      month: "short",
+    });
+    const dayFullFormatter = new Intl.DateTimeFormat("es-ES", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+
+    const rows: Array<{
+      dayKey: string;
+      dayLabel: string;
+      dayFull: string;
+      diaIngresos: number;
+      diaGastos: number;
+      ingresos: number;
+      gastos: number;
+      balance: number;
+    }> = [];
+
+    let ingresosAcum = 0;
+    let gastosAcum = 0;
+
+    const cursor = new Date(start.getTime());
+    while (cursor <= end) {
+      const dayKey = dateToInputValue(cursor);
+      const agg = byDay.get(dayKey) ?? { income: 0, expense: 0 };
+      ingresosAcum += agg.income;
+      gastosAcum += agg.expense;
+      rows.push({
+        dayKey,
+        dayLabel: dayFormatter.format(cursor),
+        dayFull: dayFullFormatter.format(cursor).replace(/^./u, (c) => c.toUpperCase()),
+        diaIngresos: agg.income,
+        diaGastos: agg.expense,
+        ingresos: ingresosAcum,
+        gastos: gastosAcum,
+        balance: ingresosAcum - gastosAcum,
+      });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return rows;
+  }, [paydayDay, periodTransactions, selectedPeriod]);
 
   const categoryChartItems = useMemo(() => {
     return groupExpensesBy(visibleTransactions, (transaction) => transaction.category);
   }, [visibleTransactions]);
 
-  const categoryMaxValue = useMemo(() => {
-    return Math.max(...categoryChartItems.map((item) => item.total), 1);
+  const categoryBarChartData = useMemo(() => {
+    return [...categoryChartItems].reverse().map((item) => ({
+      name: shortenLabel(item.label),
+      total: item.total,
+      movimientos: item.count,
+    }));
   }, [categoryChartItems]);
 
   const topExpenseItems = useMemo(() => {
     return groupExpensesBy(visibleTransactions, (transaction) => transaction.description).slice(0, 5);
   }, [visibleTransactions]);
 
-  const topExpenseMaxValue = useMemo(() => {
-    return Math.max(...topExpenseItems.map((item) => item.total), 1);
+  const topBarChartData = useMemo(() => {
+    return [...topExpenseItems].reverse().map((item) => ({
+      name: shortenLabel(item.label),
+      total: item.total,
+      veces: item.count,
+    }));
   }, [topExpenseItems]);
+
+  const globalSummaryCategories = useMemo(() => {
+    return groupExpensesBy(transactions, (transaction) => transaction.category).slice(0, 8);
+  }, [transactions]);
+
+  const globalSummaryCategoryMax = useMemo(() => {
+    return Math.max(...globalSummaryCategories.map((item) => item.total), 1);
+  }, [globalSummaryCategories]);
 
   function selectPeriod(period: string) {
     setSelectedPeriod(period);
@@ -748,7 +1148,28 @@ function FinanceApp() {
     setSyncStatus("synced");
   }
 
-  async function addTransaction(event: FormEvent<HTMLFormElement>) {
+  function resetMovementForm() {
+    setEditingTransactionId(null);
+    setDescription("");
+    setAmount("");
+    setType("expense");
+    setCategory("General");
+    setMovementDate(getDefaultMovementDate(selectedPeriod, paydayDay));
+  }
+
+  function openTransactionEditor(transaction: Transaction) {
+    setEditingTransactionId(transaction.id);
+    setDescription(transaction.description);
+    setAmount(String(transaction.amount));
+    setType(transaction.type);
+    setCategory(categoryOrDefaultForType(transaction.category, transaction.type));
+    setMovementDate(transaction.date);
+    requestAnimationFrame(() => {
+      movementFormPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }
+
+  async function submitMovementForm(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const parsedAmount = parsePositiveNumber(amount);
@@ -764,40 +1185,64 @@ function FinanceApp() {
     }
 
     const transactionPeriod = getPeriodKeyForDate(movementDate, paydayDay);
-
-    const pendingTransaction: Transaction = {
-      id: 0,
-      description: cleanDescription,
-      amount: parsedAmount,
-      type,
-      category: category.trim() || "General",
-      month: transactionPeriod,
-      date: movementDate,
-    };
+    const nextCategory = categoryOrDefaultForType(category.trim() || "General", type);
 
     setSyncStatus("syncing");
 
-    const insertResult = await db
-      .from("finance_transactions")
-      .insert(createTransactionPayload(pendingTransaction, supabaseUserId))
-      .select("id, description, amount, type, category, period, transaction_date")
-      .single();
+    if (editingTransactionId !== null) {
+      const updateResult = await db
+        .from("finance_transactions")
+        .update({
+          amount: parsedAmount,
+          category: nextCategory,
+          description: cleanDescription,
+          period: transactionPeriod,
+          transaction_date: movementDate,
+          type,
+        })
+        .eq("user_id", supabaseUserId)
+        .eq("id", editingTransactionId)
+        .select("id, description, amount, type, category, period, transaction_date")
+        .single();
 
-    if (insertResult.error) {
-      setSyncStatus("error");
-      return;
+      if (updateResult.error) {
+        setSyncStatus("error");
+        return;
+      }
+
+      const savedTransaction = mapTransactionRow(updateResult.data as FinanceTransactionRow);
+      setTransactions((current) =>
+        current.map((row) => (row.id === editingTransactionId ? savedTransaction : row)),
+      );
+    } else {
+      const pendingTransaction: Transaction = {
+        id: 0,
+        amount: parsedAmount,
+        category: nextCategory,
+        date: movementDate,
+        description: cleanDescription,
+        month: transactionPeriod,
+        type,
+      };
+
+      const insertResult = await db
+        .from("finance_transactions")
+        .insert(createTransactionPayload(pendingTransaction, supabaseUserId))
+        .select("id, description, amount, type, category, period, transaction_date")
+        .single();
+
+      if (insertResult.error) {
+        setSyncStatus("error");
+        return;
+      }
+
+      const savedTransaction = mapTransactionRow(insertResult.data as FinanceTransactionRow);
+      setTransactions((current) => [savedTransaction, ...current]);
     }
-
-    const savedTransaction = mapTransactionRow(insertResult.data as FinanceTransactionRow);
-    setTransactions((current) => [savedTransaction, ...current]);
 
     setSelectedPeriod(transactionPeriod);
     setDraftSelectedPeriod(transactionPeriod);
-    setDescription("");
-    setAmount("");
-    setCategory("General");
-    setMovementDate(getDefaultMovementDate(transactionPeriod, paydayDay));
-
+    resetMovementForm();
     setSyncStatus("synced");
   }
 
@@ -821,82 +1266,218 @@ function FinanceApp() {
     }
 
     setTransactions((current) => current.filter((transaction) => transaction.id !== id));
+    if (editingTransactionId === id) {
+      resetMovementForm();
+    }
     setSyncStatus("synced");
   }
 
   const interactive = syncStatus === "synced";
 
+  function renderTransactionCard(transaction: Transaction, variant: "full" | "nested") {
+    const isFormEditingThis = editingTransactionId === transaction.id;
+    const baseClass = [
+      variant === "nested" ? "transaction transaction--nested" : "transaction",
+      isFormEditingThis ? "transaction--editing-target" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    return (
+      <article className={baseClass} key={transaction.id}>
+        <div className={`icon ${transaction.type}`}>
+          {transaction.type === "income" ? (
+            <ArrowUpCircle aria-hidden="true" size={20} />
+          ) : (
+            <ArrowDownCircle aria-hidden="true" size={20} />
+          )}
+        </div>
+        <div className="transaction-copy">
+          <strong>{transaction.description}</strong>
+          <div className="transaction-subrow">
+            {variant === "full" ? (
+              <span className={`transaction-category-pill transaction-category-pill--${transaction.type}`}>
+                {transaction.category}
+              </span>
+            ) : null}
+            <time className="transaction-date" dateTime={transaction.date}>
+              {formatDateShort(inputValueToDate(transaction.date))}
+            </time>
+          </div>
+        </div>
+        <strong className={transaction.type}>
+          {transaction.type === "income" ? "+" : "-"}
+          {currency.format(transaction.amount)}
+        </strong>
+        <div className="transaction-actions">
+          <button
+            className="icon-button"
+            disabled={!interactive}
+            type="button"
+            onClick={() => openTransactionEditor(transaction)}
+            aria-label={`Editar ${transaction.description}`}
+            title="Editar"
+          >
+            <Pencil aria-hidden="true" size={17} />
+          </button>
+          <button
+            className="icon-button"
+            disabled={!interactive}
+            type="button"
+            onClick={() => void removeTransaction(transaction.id)}
+            aria-label={`Eliminar ${transaction.description}`}
+            title="Eliminar"
+          >
+            <Trash2 aria-hidden="true" size={17} />
+          </button>
+        </div>
+      </article>
+    );
+  }
+
+  function renderCategoryGroup(group: TransactionCategoryGroup) {
+    if (group.items.length === 1) {
+      return renderTransactionCard(group.items[0], "full");
+    }
+
+    return (
+      <div
+        className="transaction-group"
+        key={`${group.key}-${group.items[0].id}`}
+        aria-label={`${group.categoryLabel}, ${group.items.length} movimientos`}
+        role="group"
+      >
+        <div className="transaction-group-header">
+          <span className={`transaction-category-pill transaction-category-pill--${group.type}`}>
+            {group.categoryLabel}
+          </span>
+          <span className="transaction-group-meta">{group.items.length} movimientos</span>
+          <strong className={`transaction-group-total ${group.type}`}>
+            {group.type === "income" ? "+" : "-"}
+            {currency.format(group.items.reduce((subtotal, row) => row.amount + subtotal, 0))}
+          </strong>
+        </div>
+        <div className="transaction-group-rows">
+          {group.items.map((item) => renderTransactionCard(item, "nested"))}
+        </div>
+      </div>
+    );
+  }
+
+  const headingPeriod = isMonthKey(draftSelectedPeriod) ? draftSelectedPeriod : selectedPeriod;
+
   return (
     <main className="shell">
       <section className="topbar" aria-label="Resumen principal">
         <div className="title-block">
-          <div className="title-block-status">
-            <p className="eyebrow">Panel personal / {getSyncLabel(syncStatus)}</p>
-            {syncStatus === "error" ? (
+          {syncStatus === "error" ? (
+            <div className="title-block-status">
               <button className="retry-bootstrap" type="button" onClick={() => setBootstrapNonce((n) => n + 1)}>
                 Reintentar conexion
               </button>
-            ) : null}
-            {syncStatus === "error" && connectionError ? (
-              <pre className="connection-error" role="alert">
-                {connectionError}
-              </pre>
-            ) : null}
+              {connectionError ? (
+                <pre className="connection-error" role="alert">
+                  {connectionError}
+                </pre>
+              ) : null}
+            </div>
+          ) : null}
+          <div className="title-heading-row">
+            {globalSummaryOpen ? (
+              <h1 className="title-month-heading title-month-heading--summary">Resumen global</h1>
+            ) : (
+              <h1 className="title-month-heading">
+                {(() => {
+                  const { month, year } = formatMonthTitleParts(headingPeriod);
+                  return (
+                    <>
+                      <span className="title-month-heading__month">{month}</span>
+                      <span className="title-month-heading__year">{year}</span>
+                    </>
+                  );
+                })()}
+              </h1>
+            )}
+            <div className="title-block-actions">
+              {globalSummaryOpen ? (
+                <button
+                  className="global-summary-back"
+                  type="button"
+                  onClick={() => setGlobalSummaryOpen(false)}
+                >
+                  <ArrowLeft aria-hidden="true" size={18} />
+                  Volver al periodo
+                </button>
+              ) : (
+                <button
+                  className="global-summary-trigger"
+                  disabled={!interactive}
+                  type="button"
+                  onClick={() => setGlobalSummaryOpen(true)}
+                >
+                  <LayoutDashboard aria-hidden="true" size={18} />
+                  Resumen global
+                </button>
+              )}
+            </div>
           </div>
-          <h1>Finanzas</h1>
         </div>
         <div className="topbar-tools">
           <div className={`balance ${visibleTotals.balance >= 0 ? "positive" : "negative"}`}>
+            {syncStatus !== "error" ? (
+              <span
+                className={`db-status-indicator${syncStatus === "synced" ? " db-status-indicator--ok" : " db-status-indicator--pending"}`}
+                role="status"
+                aria-live="polite"
+                aria-label={
+                  syncStatus === "synced"
+                    ? "Conexion con la base de datos correcta"
+                    : syncStatus === "syncing"
+                      ? "Sincronizando cambios con la base de datos"
+                      : "Conectando con la base de datos"
+                }
+                title={
+                  syncStatus === "synced"
+                    ? "Conexion con la base de datos correcta"
+                    : syncStatus === "syncing"
+                      ? "Sincronizando cambios"
+                      : "Conectando con la base de datos"
+                }
+              >
+                <span className="db-status-indicator__dot" />
+              </span>
+            ) : null}
             <div className="balance-icon">
               <Wallet aria-hidden="true" size={23} />
             </div>
             <div>
-              <small>{activeView === "global" ? "Balance global" : "Balance del periodo"}</small>
+              <small>{globalSummaryOpen ? "Balance global" : "Balance del periodo"}</small>
               <span>{currency.format(visibleTotals.balance)}</span>
-              <em>{activeView === "global" ? "Todos los periodos" : formatPeriod(selectedPeriod, paydayDay)}</em>
+              <em>{globalSummaryOpen ? "Todos los movimientos" : formatPeriod(selectedPeriod, paydayDay)}</em>
             </div>
           </div>
         </div>
       </section>
 
-      <section className="toolbar-stack" aria-label="Vista y periodo">
-        <div className="tabs toolbar-tabs" role="tablist" aria-label="Vista de finanzas">
-          <button
-            aria-selected={activeView === "period"}
-            className={activeView === "period" ? "active" : ""}
-            role="tab"
-            type="button"
-            onClick={() => setActiveView("period")}
-          >
-            Periodo
-          </button>
-          <button
-            aria-selected={activeView === "global"}
-            className={activeView === "global" ? "active" : ""}
-            role="tab"
-            type="button"
-            onClick={() => setActiveView("global")}
-          >
-            Global
-          </button>
-        </div>
-        <div className="period-controls period-controls--stacked" aria-label="Configuracion del periodo">
+      {globalSummaryOpen ? null : (
+      <section className="period-settings-row" aria-label="Configuracion del periodo">
+        <div className="period-controls" aria-label="Periodo y dia de cobro">
           <div className="period-controls-fields">
-            <label className="control-field month-control">
-              <CalendarDays aria-hidden="true" size={18} />
-              <span>Periodo</span>
+            <label className="control-field month-control" htmlFor="field-period-month">
+              <span className="control-field__label">Periodo</span>
               <input
                 disabled={!interactive}
+                id="field-period-month"
                 type="month"
                 value={draftSelectedPeriod}
                 onChange={(event) => setDraftSelectedPeriod(event.target.value)}
               />
             </label>
-            <label className="control-field payday-control">
-              <Banknote aria-hidden="true" size={18} />
-              <span>Día de cobro</span>
+            <label className="control-field payday-control" htmlFor="field-payday-day">
+              <span className="control-field__label">Día de cobro</span>
               <input
                 disabled={!interactive}
+                id="field-payday-day"
                 max="31"
                 min="1"
                 type="number"
@@ -911,13 +1492,15 @@ function FinanceApp() {
             className="settings-save"
             disabled={!interactive}
             type="button"
+            aria-label="Guardar periodo y día de cobro"
+            title="Guardar"
             onClick={() => void savePeriodSettings()}
           >
             <Save aria-hidden="true" size={17} />
-            Guardar día de cobro
           </button>
         </div>
       </section>
+      )}
 
       <section className="summary-grid" aria-label="Resumen financiero">
         <article className="metric">
@@ -936,13 +1519,12 @@ function FinanceApp() {
         </article>
       </section>
 
+      {!globalSummaryOpen ? (
       <section className="panel charts-panel" aria-label="Graficas utiles">
         <div className="charts-header">
           <div>
             <h2>Graficas</h2>
-            <span>
-              {activeView === "global" ? "Todos los periodos" : formatPeriod(selectedPeriod, paydayDay)}
-            </span>
+            <span>{formatPeriod(selectedPeriod, paydayDay)}</span>
           </div>
           <ChartSpline aria-hidden="true" size={19} />
         </div>
@@ -964,7 +1546,7 @@ function FinanceApp() {
             type="button"
             onClick={() => setActiveChart("trend")}
           >
-            Evolucion
+            Evolución diaria
           </button>
           <button
             aria-selected={activeChart === "category"}
@@ -993,6 +1575,27 @@ function FinanceApp() {
                 <p className="empty-state">Anade ingresos y gastos para ver el flujo.</p>
               ) : (
                 <div className="flow-chart">
+                  <div className="flow-expense-grouping" role="group" aria-label="Agrupacion de gastos en el flujo">
+                    <span className="flow-expense-grouping__label">Gastos</span>
+                    <div className="flow-expense-grouping__toggle">
+                      <button
+                        type="button"
+                        className={flowExpenseGrouping === "category" ? "active" : ""}
+                        aria-pressed={flowExpenseGrouping === "category"}
+                        onClick={() => setFlowExpenseGrouping("category")}
+                      >
+                        Por categoría
+                      </button>
+                      <button
+                        type="button"
+                        className={flowExpenseGrouping === "none" ? "active" : ""}
+                        aria-pressed={flowExpenseGrouping === "none"}
+                        onClick={() => setFlowExpenseGrouping("none")}
+                      >
+                        Sin agrupar
+                      </button>
+                    </div>
+                  </div>
                   <svg
                     aria-hidden="true"
                     className="flow-svg"
@@ -1048,99 +1651,183 @@ function FinanceApp() {
 
           {activeChart === "trend" && (
             <>
-              <div className="trend-chart-scroll">
+              {dailyEvolutionChartData.length === 0 ? (
+                <p className="empty-state">No hay fechas en este periodo.</p>
+              ) : (
                 <div
-                  className="trend-chart"
-                  style={{
-                    gridTemplateColumns: `repeat(${Math.max(trendChartItems.length, 1)}, minmax(56px, 1fr))`,
-                  }}
+                  className="chart-recharts chart-recharts--trend"
+                  role="img"
+                  aria-label="Evolución diaria acumulada: ingresos, gastos y balance en el periodo"
                 >
-                  {trendChartItems.map(({ period, summary }) => (
-                    <article className="trend-column" key={period}>
-                      <div className="trend-bars" aria-hidden="true">
-                        <span
-                          className="trend-bar income-bar"
-                          style={{ height: getBarWidth(summary.income, trendMaxValue) }}
-                        />
-                        <span
-                          className="trend-bar expense-bar"
-                          style={{ height: getBarWidth(summary.expense, trendMaxValue) }}
-                        />
-                        <span
-                          className={summary.balance >= 0 ? "trend-bar saving-bar" : "trend-bar gap-bar"}
-                          style={{ height: getBarWidth(Math.abs(summary.balance), trendMaxValue) }}
-                        />
-                      </div>
-                      <strong>{formatPeriodCompact(period)}</strong>
-                    </article>
-                  ))}
+                  <ResponsiveContainer width="100%" height={340} minHeight={300}>
+                    <LineChart
+                      data={dailyEvolutionChartData}
+                      margin={{ top: 8, right: 14, left: 8, bottom: 4 }}
+                    >
+                      <CartesianGrid stroke={CHART_LINE} strokeDasharray="4 6" vertical={false} />
+                      <XAxis
+                        dataKey="dayLabel"
+                        tick={{ fill: CHART_ACCENT, fontSize: 11, fontWeight: 600 }}
+                        tickLine={false}
+                        axisLine={{ stroke: CHART_LINE }}
+                        interval="preserveStartEnd"
+                        minTickGap={10}
+                        angle={-32}
+                        textAnchor="end"
+                        height={72}
+                      />
+                      <YAxis
+                        tick={{ fill: CHART_ACCENT, fontSize: 11, fontWeight: 600 }}
+                        tickFormatter={(value: number) => currency.format(value)}
+                        tickLine={false}
+                        axisLine={{ stroke: CHART_LINE }}
+                        width={112}
+                        tickMargin={8}
+                      />
+                      <Tooltip content={<TrendEvolutionTooltip />} />
+                      <Legend
+                        formatter={(value) => {
+                          if (value === "ingresos") {
+                            return "Ingresos acumulados";
+                          }
+                          if (value === "gastos") {
+                            return "Gastos acumulados";
+                          }
+                          if (value === "balance") {
+                            return "Balance acumulado";
+                          }
+                          return String(value);
+                        }}
+                        wrapperStyle={{ fontSize: 13, fontWeight: 700 }}
+                      />
+                      <Line
+                        type="stepAfter"
+                        dataKey="gastos"
+                        name="gastos"
+                        stroke={CHART_EXPENSE}
+                        strokeWidth={2.5}
+                        dot={{ r: 4, strokeWidth: 2, fill: "#fff" }}
+                        activeDot={{ r: 6 }}
+                      />
+                      <Line
+                        type="stepAfter"
+                        dataKey="ingresos"
+                        name="ingresos"
+                        stroke={CHART_INCOME}
+                        strokeWidth={2.5}
+                        dot={{ r: 4, strokeWidth: 2, fill: "#fff" }}
+                        activeDot={{ r: 6 }}
+                      />
+                      <Line
+                        type="stepAfter"
+                        dataKey="balance"
+                        name="balance"
+                        stroke={CHART_BALANCE}
+                        strokeWidth={2.75}
+                        dot={{ r: 4, strokeWidth: 2, fill: "#fff" }}
+                        activeDot={{ r: 6 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                 
                 </div>
-              </div>
-
-              <div className="chart-key">
-                <span><i className="income-dot" />Ingresos</span>
-                <span><i className="expense-dot" />Gastos</span>
-                <span><i className="saving-dot" />Ahorro</span>
-              </div>
+              )}
             </>
           )}
 
           {activeChart === "category" && (
-            <div className="bar-list">
-              {categoryChartItems.length === 0 ? (
+            <>
+              {categoryBarChartData.length === 0 ? (
                 <p className="empty-state">No hay gastos para comparar.</p>
               ) : (
-                categoryChartItems.map((item) => (
-                  <article className="bar-row" key={item.id}>
-                    <div className="bar-row-copy">
-                      <strong>{item.label}</strong>
-                      <span>{item.count} movimientos</span>
-                    </div>
-                    <strong>{currency.format(item.total)}</strong>
-                    <div className="bar-track">
-                      <span
-                        className="bar-fill expense-fill"
-                        style={{ width: getBarWidth(item.total, categoryMaxValue) }}
+                <div
+                  className="chart-recharts chart-recharts--bars"
+                  style={{ height: Math.max(240, categoryBarChartData.length * 44 + 80) }}
+                >
+                  <ResponsiveContainer width="100%" height="100%" minHeight={200}>
+                    <BarChart
+                      data={categoryBarChartData}
+                      layout="vertical"
+                      margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+                    >
+                      <CartesianGrid stroke={CHART_LINE} strokeDasharray="4 6" horizontal={false} />
+                      <XAxis
+                        type="number"
+                        tick={{ fill: CHART_ACCENT, fontSize: 11 }}
+                        tickFormatter={(value: number) => currency.format(value)}
+                        tickLine={false}
+                        axisLine={{ stroke: CHART_LINE }}
                       />
-                    </div>
-                  </article>
-                ))
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        width={128}
+                        tick={{ fill: CHART_ACCENT, fontSize: 11 }}
+                        tickLine={false}
+                        axisLine={{ stroke: CHART_LINE }}
+                      />
+                      <Tooltip content={<BarDistributionTooltip />} cursor={{ fill: "rgba(43, 95, 117, 0.06)" }} />
+                      <Bar dataKey="total" name="Total" fill={CHART_EXPENSE} radius={[0, 6, 6, 0]} maxBarSize={36} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               )}
-            </div>
+            </>
           )}
 
           {activeChart === "top" && (
-            <div className="bar-list">
-              {topExpenseItems.length === 0 ? (
+            <>
+              {topBarChartData.length === 0 ? (
                 <p className="empty-state">No hay gastos registrados.</p>
               ) : (
-                topExpenseItems.map((item) => (
-                  <article className="bar-row" key={item.id}>
-                    <div className="bar-row-copy">
-                      <strong>{item.label}</strong>
-                      <span>{item.count} veces</span>
-                    </div>
-                    <strong>{currency.format(item.total)}</strong>
-                    <div className="bar-track">
-                      <span
-                        className="bar-fill muted-fill"
-                        style={{ width: getBarWidth(item.total, topExpenseMaxValue) }}
+                <div
+                  className="chart-recharts chart-recharts--bars"
+                  style={{ height: Math.max(220, topBarChartData.length * 44 + 80) }}
+                >
+                  <ResponsiveContainer width="100%" height="100%" minHeight={200}>
+                    <BarChart
+                      data={topBarChartData}
+                      layout="vertical"
+                      margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+                    >
+                      <CartesianGrid stroke={CHART_LINE} strokeDasharray="4 6" horizontal={false} />
+                      <XAxis
+                        type="number"
+                        tick={{ fill: CHART_ACCENT, fontSize: 11 }}
+                        tickFormatter={(value: number) => currency.format(value)}
+                        tickLine={false}
+                        axisLine={{ stroke: CHART_LINE }}
                       />
-                    </div>
-                  </article>
-                ))
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        width={128}
+                        tick={{ fill: CHART_ACCENT, fontSize: 11 }}
+                        tickLine={false}
+                        axisLine={{ stroke: CHART_LINE }}
+                      />
+                      <Tooltip content={<BarDistributionTooltip />} cursor={{ fill: "rgba(43, 95, 117, 0.06)" }} />
+                      <Bar dataKey="total" name="Total" fill={CHART_ACCENT} radius={[0, 6, 6, 0]} maxBarSize={36} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               )}
-            </div>
+            </>
           )}
         </div>
       </section>
+      ) : null}
 
-      {activeView === "period" ? (
+      {!globalSummaryOpen ? (
         <>
           <section className="workspace">
-            <form className="panel form-panel" onSubmit={addTransaction}>
+            <form
+              ref={movementFormPanelRef}
+              className={`panel form-panel${editingTransactionId !== null ? " form-panel--editing" : ""}`}
+              onSubmit={submitMovementForm}
+            >
               <div className="panel-heading">
-                <h2>Nuevo movimiento</h2>
+                <h2>{editingTransactionId !== null ? "Editar movimiento" : "Nuevo movimiento"}</h2>
               </div>
 
               <fieldset className="form-fieldset" disabled={!interactive}>
@@ -1148,7 +1835,7 @@ function FinanceApp() {
                 <button
                   className={type === "expense" ? "active" : ""}
                   type="button"
-                  onClick={() => setType("expense")}
+                  onClick={() => setMovementType("expense")}
                 >
                   <ArrowDownCircle aria-hidden="true" size={18} />
                   Gasto
@@ -1156,7 +1843,7 @@ function FinanceApp() {
                 <button
                   className={type === "income" ? "active" : ""}
                   type="button"
-                  onClick={() => setType("income")}
+                  onClick={() => setMovementType("income")}
                 >
                   <ArrowUpCircle aria-hidden="true" size={18} />
                   Ingreso
@@ -1184,73 +1871,207 @@ function FinanceApp() {
                     placeholder="0,00"
                   />
                 </label>
-                <label>
+                <label htmlFor="field-movement-date">
                   Fecha
                   <input
+                    id="field-movement-date"
                     type="date"
+                    autoComplete="off"
+                    enterKeyHint="done"
                     value={movementDate}
                     onChange={(event) => setMovementDate(event.target.value)}
                   />
                 </label>
               </div>
 
-              <label>
-                Categoria
-                <input
-                  value={category}
-                  onChange={(event) => setCategory(event.target.value)}
-                  placeholder="General"
-                />
+              <label htmlFor="field-movement-category">
+                Categoría
+                <span className="select-shell select-shell--block">
+                  <Tag aria-hidden="true" className="select-shell__icon" size={17} />
+                  <select
+                    className="select-shell__control"
+                    id="field-movement-category"
+                    value={category}
+                    onChange={(event) => setCategory(event.target.value)}
+                  >
+                    {categoriesForType(type).map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown aria-hidden="true" className="select-shell__chevron" size={18} />
+                </span>
               </label>
 
-              <button className="primary-action" type="submit">
-                <Plus aria-hidden="true" size={18} />
-                Anadir movimiento
-              </button>
+              <div className="form-submit-row">
+                {editingTransactionId !== null ? (
+                  <button
+                    className="filter-clear"
+                    disabled={!interactive}
+                    type="button"
+                    onClick={resetMovementForm}
+                  >
+                    Cancelar edición
+                  </button>
+                ) : null}
+                <button className="primary-action" type="submit">
+                  {editingTransactionId !== null ? (
+                    <>
+                      <Save aria-hidden="true" size={18} />
+                      Guardar
+                    </>
+                  ) : (
+                    <>
+                      <Plus aria-hidden="true" size={18} />
+                      Anadir movimiento
+                    </>
+                  )}
+                </button>
+              </div>
               </fieldset>
             </form>
 
             <section className="panel list-panel" aria-label="Listado de movimientos">
               <div className="panel-heading">
                 <h2>Movimientos</h2>
-                <span>{formatPeriod(selectedPeriod, paydayDay)}</span>
+                <span className="list-panel-meta">
+                  {formatPeriod(selectedPeriod, paydayDay)}
+                  {periodTransactions.length > 0 ? (
+                    <>
+                      {" · "}
+                      {filteredPeriodTransactions.length === periodTransactions.length
+                        ? String(periodTransactions.length)
+                        : `${filteredPeriodTransactions.length} de ${periodTransactions.length}`}
+                    </>
+                  ) : null}
+                </span>
               </div>
+
+              <div className="list-panel-toolbar">
+                <label className="select-shell select-shell--toolbar" htmlFor="field-movement-order">
+                  <ArrowDownUp aria-hidden="true" className="select-shell__icon" size={17} />
+                  <select
+                    className="select-shell__control"
+                    disabled={!interactive}
+                    id="field-movement-order"
+                    aria-label="Orden del listado de movimientos"
+                    value={movementListOrder}
+                    onChange={(event) => setMovementListOrder(event.target.value as MovementListOrder)}
+                  >
+                    <option value="recent">Fecha (más reciente)</option>
+                    <option value="category">Categoría (A-Z)</option>
+                    <option value="week">Por semana</option>
+                  </select>
+                  <ChevronDown aria-hidden="true" className="select-shell__chevron" size={18} />
+                </label>
+                <button
+                  aria-controls="transaction-filters-panel"
+                  aria-expanded={movementFiltersOpen}
+                  className="transaction-filters-toggle"
+                  disabled={!interactive}
+                  type="button"
+                  onClick={() => setMovementFiltersOpen((open) => !open)}
+                >
+                  <ListFilter aria-hidden="true" size={17} />
+                  Filtros
+                  {hasActiveMovementFilters ? (
+                    <span className="filter-active-badge">Activos</span>
+                  ) : null}
+                  <ChevronDown
+                    aria-hidden="true"
+                    className={movementFiltersOpen ? "filters-chevron filters-chevron--open" : "filters-chevron"}
+                    size={18}
+                  />
+                </button>
+              </div>
+
+              {movementFiltersOpen ? (
+                <div
+                  className="transaction-filters"
+                  id="transaction-filters-panel"
+                  role="search"
+                  aria-label="Filtrar movimientos del periodo"
+                >
+                  <div className="transaction-filter-row">
+                    <label>
+                      Tipo
+                      <select
+                        disabled={!interactive}
+                        value={movementFilterType}
+                        onChange={(event) =>
+                          setMovementFilterType(event.target.value as MovementFilterType)
+                        }
+                      >
+                        <option value="all">Todos</option>
+                        <option value="income">Ingresos</option>
+                        <option value="expense">Gastos</option>
+                      </select>
+                    </label>
+                    <label>
+                      Categoría
+                      <select
+                        disabled={!interactive}
+                        value={movementFilterCategory}
+                        onChange={(event) => setMovementFilterCategory(event.target.value)}
+                      >
+                        <option value="">Todas</option>
+                        {periodTransactionCategories.map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <label className="transaction-filter-search">
+                    Buscar en concepto
+                    <input
+                      disabled={!interactive}
+                      type="search"
+                      value={movementSearch}
+                      autoComplete="off"
+                      placeholder="Ej. supermercado"
+                      onChange={(event) => setMovementSearch(event.target.value)}
+                    />
+                  </label>
+                  {hasActiveMovementFilters ? (
+                    <button
+                      className="filter-clear"
+                      disabled={!interactive}
+                      type="button"
+                      onClick={() => {
+                        setMovementFilterType("all");
+                        setMovementFilterCategory("");
+                        setMovementSearch("");
+                      }}
+                    >
+                      Limpiar filtros
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
 
               <div className="transactions">
                 {periodTransactions.length === 0 ? (
                   <p className="empty-state">No hay movimientos en este periodo.</p>
-                ) : (
-                  periodTransactions.map((transaction) => (
-                    <article className="transaction" key={transaction.id}>
-                      <div className={`icon ${transaction.type}`}>
-                        {transaction.type === "income" ? (
-                          <ArrowUpCircle aria-hidden="true" size={20} />
-                        ) : (
-                          <ArrowDownCircle aria-hidden="true" size={20} />
-                        )}
+                ) : filteredPeriodTransactions.length === 0 ? (
+                  <p className="empty-state">Ningún movimiento coincide con los filtros.</p>
+                ) : movementListRender.kind === "week" ? (
+                  movementListRender.sections.map((section) => (
+                    <section
+                      key={section.weekStart}
+                      className="transaction-week-block"
+                      aria-label={`Semana del ${section.heading}`}
+                    >
+                      <h3 className="transaction-week-heading">Semana · {section.heading}</h3>
+                      <div className="transaction-week-groups">
+                        {section.groups.map((group) => renderCategoryGroup(group))}
                       </div>
-                      <div className="transaction-copy">
-                        <strong>{transaction.description}</strong>
-                        <span>
-                          {transaction.category} - {transaction.date}
-                        </span>
-                      </div>
-                      <strong className={transaction.type}>
-                        {transaction.type === "income" ? "+" : "-"}
-                        {currency.format(transaction.amount)}
-                      </strong>
-                      <button
-                        className="icon-button"
-                        disabled={!interactive}
-                        type="button"
-                        onClick={() => void removeTransaction(transaction.id)}
-                        aria-label={`Eliminar ${transaction.description}`}
-                        title="Eliminar"
-                      >
-                        <Trash2 aria-hidden="true" size={17} />
-                      </button>
-                    </article>
+                    </section>
                   ))
+                ) : (
+                  movementListRender.groups.map((group) => renderCategoryGroup(group))
                 )}
               </div>
             </section>
@@ -1281,7 +2102,66 @@ function FinanceApp() {
           </section>
         </>
       ) : (
-        <section className="global-grid" aria-label="Resumen global agrupado">
+        <section className="global-summary-view" aria-label="Resumen global">
+         
+
+          <div className="global-summary-highlights">
+            <section className="panel global-summary-panel">
+              <div className="panel-heading">
+                <h2>Evolución reciente</h2>
+                <span>Últimos periodos</span>
+              </div>
+              <div className="summary-trend-list">
+                {trendChartItems.length === 0 ? (
+                  <p className="empty-state">Aún no hay periodos con datos.</p>
+                ) : (
+                  trendChartItems.map(({ period, summary }) => (
+                    <div className="summary-trend-row" key={period}>
+                      <div className="summary-trend-copy">
+                        <strong>{formatPeriodCompact(period)}</strong>
+                        <span>
+                          Ingresos {currency.format(summary.income)} · Gastos {currency.format(summary.expense)}
+                        </span>
+                      </div>
+                      <strong className={summary.balance >= 0 ? "income" : "expense"}>
+                        {currency.format(summary.balance)}
+                      </strong>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="panel global-summary-panel">
+              <div className="panel-heading">
+                <h2>Mayores gastos por categoría</h2>
+                <span>Historial completo</span>
+              </div>
+              <div className="bar-list">
+                {globalSummaryCategories.length === 0 ? (
+                  <p className="empty-state">No hay gastos registrados.</p>
+                ) : (
+                  globalSummaryCategories.map((item) => (
+                    <article className="bar-row" key={item.id}>
+                      <div className="bar-row-copy">
+                        <strong>{item.label}</strong>
+                        <span>{item.count} movimientos</span>
+                      </div>
+                      <strong>{currency.format(item.total)}</strong>
+                      <div className="bar-track">
+                        <span
+                          className="bar-fill expense-fill"
+                          style={{ width: getBarWidth(item.total, globalSummaryCategoryMax) }}
+                        />
+                      </div>
+                    </article>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+
+        <section className="global-grid global-summary-grouped" aria-label="Totales por concepto">
           <section className="panel grouped-panel">
             <div className="panel-heading">
               <h2>Ingresos agrupados</h2>
@@ -1329,6 +2209,7 @@ function FinanceApp() {
               )}
             </div>
           </section>
+        </section>
         </section>
       )}
     </main>
