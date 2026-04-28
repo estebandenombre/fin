@@ -16,6 +16,11 @@ const fraunces = Fraunces({
 export const metadata: Metadata = {
   title: "Finanzas",
   description: "Software sencillo para controlar finanzas personales",
+  appleWebApp: {
+    capable: true,
+    title: "Finanzas",
+    statusBarStyle: "default",
+  },
 };
 
 export const viewport: Viewport = {
