@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "icons": "node scripts/generate-app-icons.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.0",
@@ -25,6 +26,7 @@
     "@types/react-dom": "19.0.2",
     "eslint": "9.17.0",
     "eslint-config-next": "^16.2.4",
+    "sharp": "^0.34.5",
     "typescript": "5.7.2"
   }
 }
