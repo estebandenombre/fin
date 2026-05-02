@@ -2993,3 +2993,127 @@ input:disabled {
     gap: 8px;
   }
 }
+
+/* ── Banco pill en tarjeta de transacción ─────────────────────────── */
+.transaction-bank-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 1px solid rgba(30, 63, 79, 0.25);
+  background: rgba(30, 63, 79, 0.07);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Panel de bancos – lista de resumen ───────────────────────────── */
+.banks-summary-list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bank-summary-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+}
+
+.bank-summary-row__main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bank-summary-row__name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bank-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.bank-summary-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.bank-summary-row__stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  padding-left: 20px;
+}
+
+/* ── Formulario de añadir banco ───────────────────────────────────── */
+.bank-add-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.bank-add-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 14px;
+  color: var(--text);
+}
+
+.bank-add-form input:focus {
+  outline: none;
+  box-shadow: var(--focus);
+  border-color: var(--accent);
+}
+
+@media (max-width: 520px) {
+  .bank-add-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .bank-summary-row__stats {
+    gap: 8px;
+    font-size: 12px;
+  }
+}

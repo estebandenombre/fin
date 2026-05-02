@@ -13,6 +13,7 @@ import {
   Ellipsis,
   HeartPulse,
   Home as HomeIcon,
+  Landmark,
   LayoutDashboard,
   ListFilter,
   LogOut,
@@ -50,6 +51,11 @@ type SyncStatus = "loading" | "syncing" | "synced" | "error";
 type MovementFilterType = "all" | TransactionType;
 type MovementListOrder = "recent" | "category" | "week";
 
+type Bank = {
+  id: number;
+  name: string;
+};
+
 type Transaction = {
   id: number;
   description: string;
@@ -58,6 +64,7 @@ type Transaction = {
   category: string;
   month: string;
   date: string;
+  bankId: number | null;
 };
 
 type FinanceTransactionRow = {
@@ -68,6 +75,7 @@ type FinanceTransactionRow = {
   category: string;
   period: string;
   transaction_date: string;
+  bank_id?: number | null;
 };
 
 type FinanceBudgetRow = {
@@ -728,6 +736,7 @@ function mapTransactionRow(row: FinanceTransactionRow): Transaction {
     category: row.category,
     month: row.period,
     date: row.transaction_date,
+    bankId: row.bank_id ?? null,
   };
 }
 
@@ -748,6 +757,7 @@ function createTransactionPayload(transaction: Transaction, userId: string) {
     category: transaction.category,
     period: transaction.month,
     transaction_date: transaction.date,
+    bank_id: transaction.bankId,
   };
 }
 
@@ -991,6 +1001,14 @@ function FinanceApp() {
   const [editingTransactionId, setEditingTransactionId] = useState<number | null>(null);
   const movementFormPanelRef = useRef<HTMLFormElement | null>(null);
 
+  // Bancos
+  const [banks, setBanks] = useState<Bank[]>([]);
+  const [formBankId, setFormBankId] = useState<number | null>(null);
+  const [movementFilterBankId, setMovementFilterBankId] = useState<number | "">("");
+  const [banksPanelCollapsed, setBanksPanelCollapsed] = useState(true);
+  const [bankDraftName, setBankDraftName] = useState("");
+  const [editingBankId, setEditingBankId] = useState<number | null>(null);
+
   function setMovementType(next: TransactionType) {
     setType(next);
     const allowed = categoriesForType(next);
@@ -1001,6 +1019,7 @@ function FinanceApp() {
     /* eslint-disable react-hooks/set-state-in-effect */
     setMovementFilterType("all");
     setMovementFilterCategory("");
+    setMovementFilterBankId("");
     setMovementSearch("");
     setMovementFiltersOpen(false);
     setEditingTransactionId(null);
@@ -1008,6 +1027,7 @@ function FinanceApp() {
     setAmount("");
     setType("expense");
     setCategory("General");
+    setFormBankId(null);
     setMovementDate(getDefaultMovementDate(selectedPeriod, paydayDay));
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [paydayDay, selectedPeriod]);
@@ -1076,9 +1096,25 @@ function FinanceApp() {
           }
         }
 
+        const banksResult = await db
+          .from("finance_banks")
+          .select("id, name")
+          .eq("user_id", userId)
+          .order("name");
+
+        if (banksResult.error) {
+          throw banksResult.error;
+        }
+
+        if (generation !== loadGenRef.current) {
+          return;
+        }
+
+        setBanks((banksResult.data ?? []).map((row) => ({ id: Number(row.id), name: String(row.name) })));
+
         const transactionsResult = await db
           .from("finance_transactions")
-          .select("id, description, amount, type, category, period, transaction_date")
+          .select("id, description, amount, type, category, period, transaction_date, bank_id")
           .eq("user_id", userId)
           .order("transaction_date", { ascending: false })
           .order("id", { ascending: false });
@@ -1151,6 +1187,7 @@ function FinanceApp() {
           setSupabaseUserId(null);
           setTransactions([]);
           setBudgetRecords([]);
+          setBanks([]);
           const resetPeriod = getPeriodKeyForDate(todayInputValue(), initialPaydayDay);
           setPaydayDay(initialPaydayDay);
           setSelectedPeriod(resetPeriod);
@@ -1165,6 +1202,8 @@ function FinanceApp() {
           setAmount("");
           setType("expense");
           setCategory("General");
+          setFormBankId(null);
+          setMovementFilterBankId("");
           setAuthPhase("guest");
           return;
         }
@@ -1237,6 +1276,10 @@ function FinanceApp() {
         return false;
       }
 
+      if (movementFilterBankId !== "" && transaction.bankId !== movementFilterBankId) {
+        return false;
+      }
+
       if (query && !transaction.description.toLowerCase().includes(query)) {
         return false;
       }
@@ -1245,6 +1288,7 @@ function FinanceApp() {
     });
   }, [
     movementFilterCategory,
+    movementFilterBankId,
     movementFilterType,
     movementSearch,
     periodTransactions,
@@ -1264,7 +1308,7 @@ function FinanceApp() {
   }, [filteredPeriodTransactions, movementListOrder]);
 
   const hasActiveMovementFilters =
-    movementFilterType !== "all" || movementFilterCategory !== "" || movementSearch.trim() !== "";
+    movementFilterType !== "all" || movementFilterCategory !== "" || movementSearch.trim() !== "" || movementFilterBankId !== "";
 
   const totals = useMemo(() => {
     return createSummary(periodTransactions);
@@ -1493,6 +1537,13 @@ function FinanceApp() {
     return Math.max(...globalSummaryCategories.map((item) => item.total), 1);
   }, [globalSummaryCategories]);
 
+  const bankSummaries = useMemo(() => {
+    return banks.map((bank) => {
+      const bankTransactions = transactions.filter((t) => t.bankId === bank.id);
+      return { bank, summary: createSummary(bankTransactions) };
+    });
+  }, [banks, transactions]);
+
   function selectPeriod(period: string) {
     setSelectedPeriod(period);
     setDraftSelectedPeriod(period);
@@ -1631,12 +1682,89 @@ function FinanceApp() {
     setConnectionError(null);
   }
 
+  async function saveBankForm(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const cleanName = bankDraftName.trim();
+    if (!cleanName || !supabaseUserId) {
+      return;
+    }
+    setSyncStatus("syncing");
+    try {
+      if (editingBankId !== null) {
+        const result = await db
+          .from("finance_banks")
+          .update({ name: cleanName })
+          .eq("user_id", supabaseUserId)
+          .eq("id", editingBankId)
+          .select("id, name")
+          .single();
+        if (result.error) {
+          throw result.error;
+        }
+        setBanks((current) =>
+          current.map((b) =>
+            b.id === editingBankId ? { id: Number(result.data.id), name: String(result.data.name) } : b,
+          ),
+        );
+        setEditingBankId(null);
+      } else {
+        const result = await db
+          .from("finance_banks")
+          .insert({ user_id: supabaseUserId, name: cleanName })
+          .select("id, name")
+          .single();
+        if (result.error) {
+          throw result.error;
+        }
+        setBanks((current) =>
+          [...current, { id: Number(result.data.id), name: String(result.data.name) }].sort((a, b) =>
+            a.name.localeCompare(b.name, "es"),
+          ),
+        );
+      }
+      setBankDraftName("");
+      setSyncStatus("synced");
+    } catch (error: unknown) {
+      setConnectionError(connectionFailureText(error));
+      setSyncStatus("error");
+    }
+  }
+
+  async function removeBank(id: number) {
+    if (!supabaseUserId) {
+      return;
+    }
+    setSyncStatus("syncing");
+    const result = await db
+      .from("finance_banks")
+      .delete()
+      .eq("user_id", supabaseUserId)
+      .eq("id", id);
+    if (result.error) {
+      setSyncStatus("error");
+      return;
+    }
+    setBanks((current) => current.filter((b) => b.id !== id));
+    if (editingBankId === id) {
+      setEditingBankId(null);
+      setBankDraftName("");
+    }
+    if (formBankId === id) {
+      setFormBankId(null);
+    }
+    setTransactions((current) =>
+      current.map((t) => (t.bankId === id ? { ...t, bankId: null } : t)),
+    );
+    setSyncStatus("synced");
+  }
+
   function resetMovementForm() {
     setEditingTransactionId(null);
     setDescription("");
     setAmount("");
     setType("expense");
     setCategory("General");
+    setFormBankId(null);
     setMovementDate(getDefaultMovementDate(selectedPeriod, paydayDay));
   }
 
@@ -1647,6 +1775,7 @@ function FinanceApp() {
     setType(transaction.type);
     setCategory(categoryOrDefaultForType(transaction.category, transaction.type));
     setMovementDate(transaction.date);
+    setFormBankId(transaction.bankId);
     requestAnimationFrame(() => {
       movementFormPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
@@ -1682,10 +1811,11 @@ function FinanceApp() {
           period: transactionPeriod,
           transaction_date: movementDate,
           type,
+          bank_id: formBankId,
         })
         .eq("user_id", supabaseUserId)
         .eq("id", editingTransactionId)
-        .select("id, description, amount, type, category, period, transaction_date")
+        .select("id, description, amount, type, category, period, transaction_date, bank_id")
         .single();
 
       if (updateResult.error) {
@@ -1706,12 +1836,13 @@ function FinanceApp() {
         description: cleanDescription,
         month: transactionPeriod,
         type,
+        bankId: formBankId,
       };
 
       const insertResult = await db
         .from("finance_transactions")
         .insert(createTransactionPayload(pendingTransaction, supabaseUserId))
-        .select("id, description, amount, type, category, period, transaction_date")
+        .select("id, description, amount, type, category, period, transaction_date, bank_id")
         .single();
 
       if (insertResult.error) {
@@ -1781,6 +1912,12 @@ function FinanceApp() {
             {variant === "full" ? (
               <span className={`transaction-category-pill transaction-category-pill--${transaction.type}`}>
                 {transaction.category}
+              </span>
+            ) : null}
+            {transaction.bankId !== null ? (
+              <span className="transaction-bank-pill">
+                <Landmark aria-hidden="true" size={11} />
+                {banks.find((b) => b.id === transaction.bankId)?.name ?? "Banco"}
               </span>
             ) : null}
             <time className="transaction-date" dateTime={transaction.date}>
@@ -2297,6 +2434,165 @@ function FinanceApp() {
       ) : null}
 
       {!globalSummaryOpen ? (
+        <section
+          className={`panel budget-panel${banksPanelCollapsed ? " budget-panel--collapsed" : ""}`}
+          aria-label="Bancos y cuentas"
+        >
+          <div className="panel-heading budget-panel-heading">
+            <h2 className="budget-panel-title">
+              <Landmark aria-hidden="true" size={18} />
+              Bancos y cuentas
+            </h2>
+            <div className="budget-panel-heading__actions">
+              <button
+                aria-controls="banks-panel-body"
+                aria-expanded={!banksPanelCollapsed}
+                className="budget-collapse-toggle"
+                type="button"
+                onClick={() => setBanksPanelCollapsed((current) => !current)}
+              >
+                <ChevronDown
+                  aria-hidden="true"
+                  className={banksPanelCollapsed ? "" : "budget-collapse-toggle__icon--open"}
+                  size={17}
+                />
+                <span>{banksPanelCollapsed ? "Mostrar" : "Ocultar"}</span>
+              </button>
+            </div>
+          </div>
+          {!banksPanelCollapsed ? (
+            <div className="budget-panel-body" id="banks-panel-body">
+              <p className="budget-panel-lead">
+                Crea tus bancos o cuentas y asócialos a cada movimiento para ver el balance por cuenta.
+              </p>
+
+              {bankSummaries.length > 0 ? (
+                <ul className="budget-rows banks-summary-list">
+                  {bankSummaries.map(({ bank, summary }) => (
+                    <li className="bank-summary-row" key={bank.id}>
+                      <div className="bank-summary-row__main">
+                        <span className="bank-summary-row__name">
+                          <Landmark aria-hidden="true" size={14} />
+                          {editingBankId === bank.id ? (
+                            <input
+                              autoFocus
+                              className="bank-name-input"
+                              disabled={!interactive}
+                              maxLength={60}
+                              value={bankDraftName}
+                              onChange={(event) => setBankDraftName(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Escape") {
+                                  setEditingBankId(null);
+                                  setBankDraftName("");
+                                }
+                              }}
+                            />
+                          ) : (
+                            bank.name
+                          )}
+                        </span>
+                        <div className="bank-summary-row__actions">
+                          {editingBankId === bank.id ? (
+                            <>
+                              <button
+                                className="icon-button"
+                                disabled={!interactive || !bankDraftName.trim()}
+                                type="button"
+                                title="Guardar nombre"
+                                aria-label={`Guardar nombre del banco ${bank.name}`}
+                                onClick={() => {
+                                  void saveBankForm({
+                                    preventDefault: () => {},
+                                  } as FormEvent<HTMLFormElement>);
+                                }}
+                              >
+                                <Save aria-hidden="true" size={15} />
+                              </button>
+                              <button
+                                className="icon-button"
+                                type="button"
+                                title="Cancelar edición"
+                                aria-label="Cancelar edición"
+                                onClick={() => {
+                                  setEditingBankId(null);
+                                  setBankDraftName("");
+                                }}
+                              >
+                                ✕
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                className="icon-button"
+                                disabled={!interactive}
+                                type="button"
+                                title="Editar banco"
+                                aria-label={`Editar banco ${bank.name}`}
+                                onClick={() => {
+                                  setEditingBankId(bank.id);
+                                  setBankDraftName(bank.name);
+                                }}
+                              >
+                                <Pencil aria-hidden="true" size={15} />
+                              </button>
+                              <button
+                                className="icon-button"
+                                disabled={!interactive}
+                                type="button"
+                                title="Eliminar banco"
+                                aria-label={`Eliminar banco ${bank.name}`}
+                                onClick={() => void removeBank(bank.id)}
+                              >
+                                <Trash2 aria-hidden="true" size={15} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="bank-summary-row__stats">
+                        <span className="income">+{currency.format(summary.income)}</span>
+                        <span className="expense">−{currency.format(summary.expense)}</span>
+                        <strong className={summary.balance >= 0 ? "income" : "expense"}>
+                          {currency.format(summary.balance)}
+                        </strong>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+
+              <form
+                className="bank-add-form"
+                onSubmit={(e) => void saveBankForm(e)}
+              >
+                <label htmlFor="field-bank-name" className="visually-hidden">
+                  Nombre del banco
+                </label>
+                <input
+                  disabled={!interactive || editingBankId !== null}
+                  id="field-bank-name"
+                  maxLength={60}
+                  placeholder="Nombre del banco o cuenta"
+                  value={editingBankId !== null ? "" : bankDraftName}
+                  onChange={(event) => setBankDraftName(event.target.value)}
+                />
+                <button
+                  className="primary-action"
+                  disabled={!interactive || !bankDraftName.trim() || editingBankId !== null}
+                  type="submit"
+                >
+                  <Plus aria-hidden="true" size={17} />
+                  Añadir banco
+                </button>
+              </form>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {!globalSummaryOpen ? (
       <section className="panel charts-panel" aria-label="Graficas utiles">
         <div className="charts-header">
           <div>
@@ -2633,6 +2929,31 @@ function FinanceApp() {
                 </span>
               </label>
 
+              {banks.length > 0 ? (
+                <label htmlFor="field-movement-bank">
+                  Banco / Cuenta
+                  <span className="select-shell select-shell--block">
+                    <Landmark aria-hidden="true" className="select-shell__icon" size={17} />
+                    <select
+                      className="select-shell__control"
+                      id="field-movement-bank"
+                      value={formBankId ?? ""}
+                      onChange={(event) =>
+                        setFormBankId(event.target.value ? Number(event.target.value) : null)
+                      }
+                    >
+                      <option value="">Sin banco</option>
+                      {banks.map((bank) => (
+                        <option key={bank.id} value={bank.id}>
+                          {bank.name}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown aria-hidden="true" className="select-shell__chevron" size={18} />
+                  </span>
+                </label>
+              ) : null}
+
               <div className="form-submit-row">
                 {editingTransactionId !== null ? (
                   <button
@@ -2752,6 +3073,25 @@ function FinanceApp() {
                         ))}
                       </select>
                     </label>
+                    {banks.length > 0 ? (
+                      <label>
+                        Banco
+                        <select
+                          disabled={!interactive}
+                          value={movementFilterBankId}
+                          onChange={(event) =>
+                            setMovementFilterBankId(event.target.value ? Number(event.target.value) : "")
+                          }
+                        >
+                          <option value="">Todos</option>
+                          {banks.map((bank) => (
+                            <option key={bank.id} value={bank.id}>
+                              {bank.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
                   </div>
                   <label className="transaction-filter-search">
                     Buscar en concepto
@@ -2772,6 +3112,7 @@ function FinanceApp() {
                       onClick={() => {
                         setMovementFilterType("all");
                         setMovementFilterCategory("");
+                        setMovementFilterBankId("");
                         setMovementSearch("");
                       }}
                     >
