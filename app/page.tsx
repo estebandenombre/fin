@@ -1,23 +1,30 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownCircle,
   ArrowDownUp,
   ArrowLeft,
   ArrowUpCircle,
-  CalendarDays,
+  BookOpen,
+  Car,
   ChartSpline,
   ChevronDown,
+  Ellipsis,
+  HeartPulse,
+  Home as HomeIcon,
   LayoutDashboard,
   ListFilter,
   LogOut,
+  PlugZap,
+  Popcorn,
   Pencil,
   PiggyBank,
   Plus,
   Save,
   Tag,
   Trash2,
+  UtensilsCrossed,
   Wallet,
 } from "lucide-react";
 import {
@@ -36,7 +43,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
 type TransactionType = "income" | "expense";
-type ActiveChart = "flow" | "trend" | "category" | "top";
+type ActiveChart = "flow" | "trend" | "top";
 type FlowExpenseGrouping = "category" | "none";
 type SyncStatus = "loading" | "syncing" | "synced" | "error";
 
@@ -107,6 +114,10 @@ type ChartItem = {
 const currency = new Intl.NumberFormat("es-ES", {
   style: "currency",
   currency: "EUR",
+});
+const percent = new Intl.NumberFormat("es-ES", {
+  style: "percent",
+  maximumFractionDigits: 1,
 });
 
 const CHART_INCOME = "#15803d";
@@ -230,6 +241,36 @@ const INCOME_CATEGORIES = [
   "Otros",
 ] as const;
 
+const EXPENSE_CATEGORY_VISUALS: Record<
+  (typeof EXPENSE_CATEGORIES)[number],
+  { icon: typeof Wallet; color: string; bg: string }
+> = {
+  General: { icon: Wallet, color: "#2563eb", bg: "#eff6ff" },
+  Comida: { icon: UtensilsCrossed, color: "#16a34a", bg: "#ecfdf3" },
+  Casa: { icon: HomeIcon, color: "#f59e0b", bg: "#fffbeb" },
+  Transporte: { icon: Car, color: "#3b82f6", bg: "#eff6ff" },
+  Ocio: { icon: Popcorn, color: "#a855f7", bg: "#faf5ff" },
+  Salud: { icon: HeartPulse, color: "#e11d48", bg: "#fff1f2" },
+  Educación: { icon: BookOpen, color: "#ca8a04", bg: "#fefce8" },
+  Servicios: { icon: PlugZap, color: "#0ea5e9", bg: "#ecfeff" },
+  Otros: { icon: Ellipsis, color: "#9333ea", bg: "#faf5ff" },
+};
+
+const AUTO_BUDGET_TEMPLATE: Partial<Record<(typeof EXPENSE_CATEGORIES)[number], number>> = {
+  Casa: 30,
+  Comida: 15,
+  Transporte: 10,
+  Servicios: 10,
+  Salud: 8,
+  Educación: 7,
+  Ocio: 10,
+  Otros: 5,
+  General: 5,
+};
+
+const BUDGET_STATUS_OK_IMAGE = "/ilustracion-finanzas-ok.svg";
+const BUDGET_STATUS_ALERT_IMAGE = "/ilustracion-finanzas-bad.svg";
+
 function categoriesForType(movementType: TransactionType): readonly string[] {
   return movementType === "expense" ? EXPENSE_CATEGORIES : INCOME_CATEGORIES;
 }
@@ -348,6 +389,14 @@ function formatPeriod(period: string, paydayDay: number) {
 
   const { start, end } = getPeriodRange(period, paydayDay);
   return `${formatDateShort(start)} - ${formatDateShort(end)}`;
+}
+
+/** Etiqueta tipo chip para el selector de mes (ej. "Abril 2026"). */
+function formatMonthChipLabel(period: string) {
+  const { year, monthIndex } = parseMonthKey(period);
+  const monthLong = new Intl.DateTimeFormat("es-ES", { month: "long" }).format(new Date(year, monthIndex, 1));
+  const monthTitle = monthLong.charAt(0).toUpperCase() + monthLong.slice(1);
+  return `${monthTitle} ${year}`;
 }
 
 /** Título del mes de trabajo: mes y año por separado (tipografía distinta en la UI). */
@@ -490,6 +539,23 @@ function parseBudgetInput(value: string): { kind: "amount"; amount: number } | {
     return { kind: "clear" };
   }
   return { kind: "amount", amount: parsedValue };
+}
+
+function parseBudgetPercentInput(
+  value: string,
+): { kind: "percent"; value: number } | { kind: "clear" } | { kind: "invalid" } {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return { kind: "clear" };
+  }
+  const parsedValue = Number(trimmed.replace(",", "."));
+  if (!Number.isFinite(parsedValue) || parsedValue < 0) {
+    return { kind: "invalid" };
+  }
+  if (parsedValue === 0) {
+    return { kind: "clear" };
+  }
+  return { kind: "percent", value: parsedValue };
 }
 
 function createSummary(transactions: Transaction[]): Summary {
@@ -908,6 +974,7 @@ function FinanceApp() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [budgetRecords, setBudgetRecords] = useState<BudgetRecord[]>([]);
   const [budgetInputs, setBudgetInputs] = useState<Record<string, string>>({});
+  const [budgetPercentInputs, setBudgetPercentInputs] = useState<Record<string, string>>({});
   const [budgetPanelCollapsed, setBudgetPanelCollapsed] = useState(true);
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
@@ -947,14 +1014,26 @@ function FinanceApp() {
 
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
-    const next: Record<string, string> = {};
+    const nextAmount: Record<string, string> = {};
+    const nextPercent: Record<string, string> = {};
+    const incomeForSelectedPeriod = transactions.reduce((sum, transaction) => {
+      if (transaction.month !== selectedPeriod || transaction.type !== "income") {
+        return sum;
+      }
+      return sum + transaction.amount;
+    }, 0);
     for (const cat of EXPENSE_CATEGORIES) {
       const rec = budgetRecords.find((r) => r.period === selectedPeriod && r.category === cat);
-      next[cat] = rec && rec.amount > 0 ? String(rec.amount) : "";
+      nextAmount[cat] = rec && rec.amount > 0 ? String(rec.amount) : "";
+      nextPercent[cat] =
+        rec && rec.amount > 0 && incomeForSelectedPeriod > 0
+          ? String(Number(((rec.amount / incomeForSelectedPeriod) * 100).toFixed(2)))
+          : "";
     }
-    setBudgetInputs(next);
+    setBudgetInputs(nextAmount);
+    setBudgetPercentInputs(nextPercent);
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [budgetRecords, selectedPeriod]);
+  }, [budgetRecords, selectedPeriod, transactions]);
 
   const loadUserFinanceData = useCallback(
     async (userId: string) => {
@@ -1363,6 +1442,49 @@ function FinanceApp() {
     }));
   }, [topExpenseItems]);
 
+  const budgetPlannerRows = useMemo(() => {
+    return [...EXPENSE_CATEGORIES]
+      .map((category) => {
+        const budget = budgetAmountByCategory.get(category) ?? 0;
+        const spent = expenseSpentByCategory.get(category) ?? 0;
+        const spentPct = budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
+        const over = budget > 0 && spent > budget;
+        const atLimit = budget > 0 && Math.abs(spent - budget) < 0.005;
+        return { category, budget, spent, spentPct, over, atLimit };
+      })
+      .sort((a, b) => b.budget - a.budget);
+  }, [budgetAmountByCategory, expenseSpentByCategory]);
+
+  const budgetTotal = useMemo(
+    () => budgetPlannerRows.reduce((sum, row) => sum + row.budget, 0),
+    [budgetPlannerRows],
+  );
+  const budgetAssignedRatio = useMemo(
+    () => (visibleTotals.income > 0 ? budgetTotal / visibleTotals.income : 0),
+    [budgetTotal, visibleTotals.income],
+  );
+  const budgetAssignedWidthPct = useMemo(
+    () => Math.max(0, Math.min(100, budgetAssignedRatio * 100)),
+    [budgetAssignedRatio],
+  );
+  const budgetTopRows = useMemo(
+    () => budgetPlannerRows.filter((row) => row.budget > 0).slice(0, 5),
+    [budgetPlannerRows],
+  );
+  const budgetSpentTotal = useMemo(
+    () => budgetPlannerRows.reduce((sum, row) => sum + row.spent, 0),
+    [budgetPlannerRows],
+  );
+  const budgetOverAmount = useMemo(
+    () => Math.max(0, budgetSpentTotal - budgetTotal),
+    [budgetSpentTotal, budgetTotal],
+  );
+  const budgetIsOver = budgetOverAmount > 0;
+  const budgetOverPct = useMemo(
+    () => (budgetTotal > 0 ? budgetOverAmount / budgetTotal : 0),
+    [budgetOverAmount, budgetTotal],
+  );
+
   const globalSummaryCategories = useMemo(() => {
     return groupExpensesBy(transactions, (transaction) => transaction.category).slice(0, 8);
   }, [transactions]);
@@ -1426,14 +1548,29 @@ function FinanceApp() {
     try {
       setConnectionError(null);
       for (const cat of EXPENSE_CATEGORIES) {
-        const parsed = parseBudgetInput(budgetInputs[cat] ?? "");
-        if (parsed.kind === "invalid") {
-          setConnectionError("Revisa los importes de presupuesto: solo numeros positivos o dejalos vacios.");
+        const parsedAmount = parseBudgetInput(budgetInputs[cat] ?? "");
+        const parsedPercent = parseBudgetPercentInput(budgetPercentInputs[cat] ?? "");
+        if (parsedAmount.kind === "invalid" || parsedPercent.kind === "invalid") {
+          setConnectionError(
+            "Revisa presupuesto y porcentaje: usa solo numeros positivos o deja el campo vacio.",
+          );
           setSyncStatus("error");
           return;
         }
 
-        if (parsed.kind === "clear") {
+        let nextAmount: number | null = null;
+        if (parsedAmount.kind === "amount") {
+          nextAmount = parsedAmount.amount;
+        } else if (parsedPercent.kind === "percent") {
+          if (visibleTotals.income <= 0) {
+            setConnectionError("No se puede calcular el presupuesto por porcentaje sin ingresos en el periodo.");
+            setSyncStatus("error");
+            return;
+          }
+          nextAmount = (parsedPercent.value / 100) * visibleTotals.income;
+        }
+
+        if (nextAmount === null) {
           const del = await db
             .from("finance_budgets")
             .delete()
@@ -1449,7 +1586,7 @@ function FinanceApp() {
               user_id: supabaseUserId,
               period: selectedPeriod,
               category: cat,
-              amount: parsed.amount,
+              amount: Number(nextAmount.toFixed(2)),
             },
             { onConflict: "user_id,period,category" },
           );
@@ -1474,6 +1611,24 @@ function FinanceApp() {
       setConnectionError(connectionFailureText(error));
       setSyncStatus("error");
     }
+  }
+
+  function applyAutoBudgetTemplate() {
+    const nextPercentInputs: Record<string, string> = {};
+    const nextAmountInputs: Record<string, string> = {};
+
+    for (const category of EXPENSE_CATEGORIES) {
+      const pct = AUTO_BUDGET_TEMPLATE[category] ?? 0;
+      nextPercentInputs[category] = pct > 0 ? String(pct) : "";
+      nextAmountInputs[category] =
+        pct > 0 && visibleTotals.income > 0
+          ? String(Number((((pct / 100) * visibleTotals.income)).toFixed(2)))
+          : "";
+    }
+
+    setBudgetPercentInputs((current) => ({ ...current, ...nextPercentInputs }));
+    setBudgetInputs((current) => ({ ...current, ...nextAmountInputs }));
+    setConnectionError(null);
   }
 
   function resetMovementForm() {
@@ -1814,34 +1969,38 @@ function FinanceApp() {
       {globalSummaryOpen ? null : (
       <section className="period-settings-row" aria-label="Configuracion del periodo">
         <div className="period-controls" aria-label="Periodo y dia de cobro">
-          <div className="period-controls-summary">
-            <span className="period-controls-summary__icon">
-              <CalendarDays aria-hidden="true" size={18} />
-            </span>
-            <div>
-              <span className="period-controls-summary__eyebrow">Periodo activo</span>
-              <strong>
-                {formatPeriod(
-                  isMonthKey(draftSelectedPeriod) ? draftSelectedPeriod : selectedPeriod,
-                  clampPaydayDay(Number(draftPaydayDay)),
-                )}
-              </strong>
-            </div>
+          <div className="period-context">
+            <span className="period-context__label">Periodo activo</span>
+            <p className="period-context__value" aria-live="polite">
+              {formatPeriod(
+                isMonthKey(draftSelectedPeriod) ? draftSelectedPeriod : selectedPeriod,
+                clampPaydayDay(Number(draftPaydayDay)),
+              )}
+            </p>
           </div>
-          <div className="period-controls-fields">
-            <label className="control-field month-control" htmlFor="field-period-month">
-              <span className="control-field__label">Periodo</span>
+          <div className="period-controls-chips">
+            <label className="period-chip">
               <input
+                className="period-chip__input"
                 disabled={!interactive}
                 id="field-period-month"
                 type="month"
+                aria-label="Mes del periodo"
                 value={draftSelectedPeriod}
                 onChange={(event) => setDraftSelectedPeriod(event.target.value)}
               />
+              <span className="period-chip__face" aria-hidden="true">
+                <span className="period-chip__text">
+                  {formatMonthChipLabel(
+                    isMonthKey(draftSelectedPeriod) ? draftSelectedPeriod : selectedPeriod,
+                  )}
+                </span>
+                <ChevronDown aria-hidden="true" className="period-chip__caret" size={16} strokeWidth={2} />
+              </span>
             </label>
-            <label className="control-field payday-control" htmlFor="field-payday-day">
-              <span className="control-field__label">Día de cobro</span>
+            <label className="period-chip">
               <input
+                className="period-chip__input"
                 disabled={!interactive}
                 id="field-payday-day"
                 max="31"
@@ -1852,18 +2011,20 @@ function FinanceApp() {
                 value={draftPaydayDay}
                 onChange={(event) => updatePaydayDay(event.target.value)}
               />
+              <span className="period-chip__face" aria-hidden="true">
+                <span className="period-chip__text">Día {clampPaydayDay(Number(draftPaydayDay))}</span>
+                <ChevronDown aria-hidden="true" className="period-chip__caret" size={16} strokeWidth={2} />
+              </span>
             </label>
           </div>
           <button
-            className="settings-save"
+            className="period-save-btn"
             disabled={!interactive}
             type="button"
             aria-label="Guardar periodo y día de cobro"
-            title="Guardar"
             onClick={() => void savePeriodSettings()}
           >
-            <Save aria-hidden="true" size={17} />
-            <span>Guardar</span>
+            Guardar
           </button>
         </div>
       </section>
@@ -1920,44 +2081,205 @@ function FinanceApp() {
                 Define un tope por categoría. Se compara con los gastos de este periodo. Deja vacío el importe para
                 quitar el presupuesto de esa categoría.
               </p>
-              <ul className="budget-rows">
-                {EXPENSE_CATEGORIES.map((cat) => {
-                  const spent = expenseSpentByCategory.get(cat) ?? 0;
-                  const cap = budgetAmountByCategory.get(cat) ?? 0;
-                  const pct = cap > 0 ? Math.min(100, (spent / cap) * 100) : 0;
-                  const over = cap > 0 && spent > cap;
-                  return (
-                    <li className="budget-row" key={cat}>
-                      <div className="budget-row__main">
-                        <span className="budget-row__cat">{cat}</span>
-                        <span className="budget-row__spent">
-                          Gastado: <strong>{currency.format(spent)}</strong>
+              <div className="budget-modern-layout">
+                <section className="budget-modern-editor" aria-label="Presupuesto por categoria">
+                  <div className="budget-modern-editor__header">
+                    <label className="budget-modern-period">
+                      <span>Periodo</span>
+                      <input disabled={!interactive} type="month" value={selectedPeriod} readOnly />
+                    </label>
+                    <button
+                      className="budget-modern-auto"
+                      disabled={!interactive}
+                      type="button"
+                      onClick={applyAutoBudgetTemplate}
+                    >
+                      Distribuir automaticamente
+                    </button>
+                  </div>
+                  <ul className="budget-modern-list">
+                    {budgetPlannerRows.map((row) => {
+                      const visual = EXPENSE_CATEGORY_VISUALS[row.category] ?? EXPENSE_CATEGORY_VISUALS.General;
+                      const Icon = visual.icon;
+                      const iconStyle = {
+                        "--budget-icon-color": visual.color,
+                        "--budget-icon-bg": visual.bg,
+                      } as CSSProperties;
+                      return (
+                      <li className="budget-modern-row" key={row.category}>
+                        <div className="budget-modern-row__meta">
+                          <div className="budget-modern-row__meta-main">
+                            <span className="budget-category-icon budget-category-icon--small" style={iconStyle}>
+                              <Icon aria-hidden="true" size={18} />
+                            </span>
+                            <strong>{row.category}</strong>
+                          </div>
+                          <span>Gastado {currency.format(row.spent)}</span>
+                        </div>
+                        <label className="budget-modern-row__input">
+                          <span className="visually-hidden">Presupuesto {row.category}</span>
+                          <input
+                            disabled={!interactive}
+                            inputMode="decimal"
+                            min="0"
+                            step="0.01"
+                            type="number"
+                            placeholder="0,00"
+                            value={budgetInputs[row.category] ?? ""}
+                            onChange={(event) =>
+                              setBudgetInputs((current) => ({ ...current, [row.category]: event.target.value }))
+                            }
+                          />
+                        </label>
+                        <label className="budget-modern-row__percent-input">
+                          <span className="visually-hidden">Porcentaje {row.category}</span>
+                          <input
+                            disabled={!interactive}
+                            inputMode="decimal"
+                            min="0"
+                            step="0.1"
+                            type="number"
+                            placeholder="%"
+                            value={budgetPercentInputs[row.category] ?? ""}
+                            onChange={(event) => {
+                              const nextPercentRaw = event.target.value;
+                              setBudgetPercentInputs((current) => ({ ...current, [row.category]: nextPercentRaw }));
+                              const parsedPercent = Number(nextPercentRaw.replace(",", "."));
+                              if (!Number.isFinite(parsedPercent) || parsedPercent <= 0 || visibleTotals.income <= 0) {
+                                return;
+                              }
+                              const estimatedAmount = (parsedPercent / 100) * visibleTotals.income;
+                              setBudgetInputs((current) => ({
+                                ...current,
+                                [row.category]: String(Number(estimatedAmount.toFixed(2))),
+                              }));
+                            }}
+                          />
+                        </label>
+                        <span className="budget-modern-row__pct">
+                          {budgetTotal > 0 ? percent.format(row.budget / budgetTotal) : "0%"}
+                        </span>
+                        <div
+                          className={`budget-modern-row__progress${row.over ? " budget-modern-row__progress--over" : ""}${row.atLimit ? " budget-modern-row__progress--limit" : ""}`}
+                        >
+                          <div className="budget-modern-row__progress-fill" style={{ width: `${row.spentPct}%` }} />
+                        </div>
+                        {row.budget > 0 ? (
+                          <span
+                            className={`budget-modern-row__progress-note${row.over ? " budget-modern-row__progress-note--over" : ""}`}
+                          >
+                            {row.over
+                              ? `+${currency.format(row.spent - row.budget)}`
+                              : `${currency.format(row.budget - row.spent)} restantes`}
+                          </span>
+                        ) : null}
+                      </li>
+                    );
+                    })}
+                  </ul>
+                </section>
+
+                <aside className="budget-modern-summary" aria-label="Resumen del presupuesto">
+                  <header className="budget-summary__title">
+                    <h3>Resumen del presupuesto</h3>
+                  </header>
+
+                  <div className="budget-summary-total">
+                    <span className="budget-summary-total__label">Presupuesto total</span>
+                    <strong className="budget-summary-total__value">{currency.format(budgetTotal)}</strong>
+                  </div>
+
+                  {budgetIsOver ? (
+                    <div className="budget-summary-alert" role="alert">
+                      <div>
+                        <strong>Te has pasado del presupuesto</strong>
+                        <span>
+                          Has gastado {percent.format(budgetOverPct)} más de lo previsto
                         </span>
                       </div>
-                      {cap > 0 ? (
-                        <div className={`budget-row__track${over ? " budget-row__track--over" : ""}`}>
-                          <div className="budget-row__fill" style={{ width: `${pct}%` }} />
-                        </div>
-                      ) : null}
-                      <label className="budget-row__field">
-                        <span className="visually-hidden">Presupuesto {cat}</span>
-                        <input
-                          disabled={!interactive}
-                          inputMode="decimal"
-                          min="0"
-                          step="0.01"
-                          type="number"
-                          placeholder="Sin tope"
-                          value={budgetInputs[cat] ?? ""}
-                          onChange={(event) =>
-                            setBudgetInputs((current) => ({ ...current, [cat]: event.target.value }))
-                          }
-                        />
-                      </label>
-                    </li>
-                  );
-                })}
-              </ul>
+                      <strong className="budget-summary-alert__amount">{currency.format(budgetOverAmount)}</strong>
+                    </div>
+                  ) : null}
+
+                  <section className="budget-summary-distribution" aria-label="Distribución del presupuesto">
+                    <div className="budget-summary-distribution__head">
+                      <span className="budget-summary-distribution__label">Distribución</span>
+                      <span className="budget-summary-distribution__badge">
+                        {percent.format(budgetAssignedRatio)} del ingreso
+                      </span>
+                    </div>
+                    <div className="budget-summary-distribution__bar">
+                      <div
+                        className="budget-summary-distribution__fill"
+                        style={{ width: `${budgetAssignedWidthPct}%` }}
+                      >
+                        {budgetPlannerRows
+                          .filter((row) => row.budget > 0 && budgetTotal > 0)
+                          .map((row) => (
+                            <span
+                              key={row.category}
+                              className="budget-summary-distribution__segment"
+                              style={{ width: `${(row.budget / budgetTotal) * 100}%` }}
+                              title={`${row.category}: ${currency.format(row.budget)}`}
+                            />
+                          ))}
+                      </div>
+                    </div>
+                  </section>
+
+                  <div className={`budget-status-card${budgetIsOver ? " budget-status-card--alert" : ""}`}>
+                    <div className="budget-status-card__art">
+                      <img
+                        src={budgetIsOver ? BUDGET_STATUS_ALERT_IMAGE : BUDGET_STATUS_OK_IMAGE}
+                        alt={budgetIsOver ? "Estado de presupuesto en alerta" : "Estado de presupuesto en orden"}
+                        width={112}
+                        height={112}
+                      />
+                    </div>
+                    <div className="budget-status-card__copy">
+                      <strong>{budgetIsOver ? "Necesita atención" : "Todo en orden"}</strong>
+                      <p>
+                        {budgetIsOver
+                          ? "Algunos aspectos de tu presupuesto necesitan atención."
+                          : "Tus finanzas están equilibradas y vas por buen camino."}
+                      </p>
+                    </div>
+                  </div>
+
+                  <section className="budget-summary-top" aria-label="Categorías principales">
+                    <div className="budget-summary-top__head">
+                      <span className="budget-summary-top__title">Categorías principales</span>
+                      <span className="budget-summary-top__hint">Mayor presupuesto</span>
+                    </div>
+                    <ul className="budget-summary-top__list">
+                      {budgetTopRows.map((row) => {
+                        const visual = EXPENSE_CATEGORY_VISUALS[row.category] ?? EXPENSE_CATEGORY_VISUALS.General;
+                        const Icon = visual.icon;
+                        const iconStyle = {
+                          "--budget-icon-color": visual.color,
+                          "--budget-icon-bg": visual.bg,
+                        } as CSSProperties;
+                        return (
+                          <li key={row.category} className="budget-summary-top__item">
+                            <div className="budget-summary-top__main">
+                              <span className="budget-category-icon budget-category-icon--small" style={iconStyle}>
+                                <Icon aria-hidden="true" size={18} />
+                              </span>
+                              <div className="budget-summary-top__text">
+                                <span className="budget-summary-top__name">{row.category}</span>
+                                <span className="budget-summary-top__amount">{currency.format(row.budget)}</span>
+                              </div>
+                            </div>
+                            <span className="budget-summary-top__pct">
+                              {budgetTotal > 0 ? percent.format(row.budget / budgetTotal) : "0%"}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </section>
+                </aside>
+              </div>
               <div className="budget-panel-footer">
                 <button
                   className="primary-action"
@@ -2002,15 +2324,6 @@ function FinanceApp() {
             onClick={() => setActiveChart("trend")}
           >
             Evolución diaria
-          </button>
-          <button
-            aria-selected={activeChart === "category"}
-            className={activeChart === "category" ? "active" : ""}
-            role="tab"
-            type="button"
-            onClick={() => setActiveChart("category")}
-          >
-            Categorias
           </button>
           <button
             aria-selected={activeChart === "top"}
@@ -2141,7 +2454,7 @@ function FinanceApp() {
                       />
                       <Tooltip content={<TrendEvolutionTooltip />} />
                       <Legend
-                        formatter={(value) => {
+                        formatter={(value: string | number) => {
                           if (value === "ingresos") {
                             return "Ingresos acumulados";
                           }
@@ -2190,46 +2503,6 @@ function FinanceApp() {
             </>
           )}
 
-          {activeChart === "category" && (
-            <>
-              {categoryBarChartData.length === 0 ? (
-                <p className="empty-state">No hay gastos para comparar.</p>
-              ) : (
-                <div
-                  className="chart-recharts chart-recharts--bars"
-                  style={{ height: Math.max(240, categoryBarChartData.length * 44 + 80) }}
-                >
-                  <ResponsiveContainer width="100%" height="100%" minHeight={200}>
-                    <BarChart
-                      data={categoryBarChartData}
-                      layout="vertical"
-                      margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
-                    >
-                      <CartesianGrid stroke={CHART_LINE} strokeDasharray="4 6" horizontal={false} />
-                      <XAxis
-                        type="number"
-                        tick={{ fill: CHART_ACCENT, fontSize: 11 }}
-                        tickFormatter={(value: number) => currency.format(value)}
-                        tickLine={false}
-                        axisLine={{ stroke: CHART_LINE }}
-                      />
-                      <YAxis
-                        type="category"
-                        dataKey="name"
-                        width={128}
-                        tick={{ fill: CHART_ACCENT, fontSize: 11 }}
-                        tickLine={false}
-                        axisLine={{ stroke: CHART_LINE }}
-                      />
-                      <Tooltip content={<BarDistributionTooltip />} cursor={{ fill: "rgba(43, 95, 117, 0.06)" }} />
-                      <Bar dataKey="total" name="Total" fill={CHART_EXPENSE} radius={[0, 6, 6, 0]} maxBarSize={36} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </>
-          )}
-
           {activeChart === "top" && (
             <>
               {topBarChartData.length === 0 ? (
@@ -2269,6 +2542,7 @@ function FinanceApp() {
               )}
             </>
           )}
+
         </div>
       </section>
       ) : null}

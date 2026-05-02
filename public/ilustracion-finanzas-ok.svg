@@ -1,0 +1,60 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Ilustración de finanzas en buen estado</title>
+  <desc id="desc">Planta verde con una marca de verificación dentro de un círculo, sobre un fondo orgánico verde claro.</desc>
+
+  <defs>
+    <linearGradient id="blob" x1="130" y1="55" x2="390" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EAF7EF"/>
+      <stop offset="1" stop-color="#F5FBF7"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="145" y1="150" x2="260" y2="315" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#BFEED0"/>
+      <stop offset="1" stop-color="#DDF7E6"/>
+    </linearGradient>
+    <filter id="softShadow" x="90" y="360" width="190" height="100" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#0B5F38" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <!-- soft organic background -->
+  <path d="M137.4 420.6C67.6 392.3 43.9 312.5 68.9 244.2C88.4 190.8 128.4 194.3 157.7 149.5C193.8 94.4 221.9 54.7 291.3 61.2C367.2 68.3 416.7 129.4 431.9 199.5C448.9 278.3 417.3 361.1 348.7 400.5C286.2 436.3 206.9 448.8 137.4 420.6Z" fill="url(#blob)"/>
+
+  <!-- decorative marks -->
+  <path d="M62 107V91" stroke="#B8EAC7" stroke-width="4" stroke-linecap="round"/>
+  <path d="M54 99H70" stroke="#B8EAC7" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="359" cy="154" r="8" stroke="#B8EAC7" stroke-width="4"/>
+
+  <!-- ground shadow -->
+  <ellipse cx="201" cy="430" rx="145" ry="9" fill="#D7E4DC" opacity="0.55"/>
+
+  <!-- pot -->
+  <g filter="url(#softShadow)">
+    <path d="M158 335H253L244 420H167L158 335Z" fill="#FFFFFF" stroke="#D5E5DC" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M145 318H267C273 318 278 323 278 329V337H134V329C134 323 139 318 145 318Z" fill="#FFFFFF" stroke="#D5E5DC" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M178 343H233" stroke="#EEF5F1" stroke-width="5" stroke-linecap="round"/>
+  </g>
+
+  <!-- stems -->
+  <path d="M202 319C203 276 204 229 209 179" stroke="#16A45B" stroke-width="6" stroke-linecap="round"/>
+  <path d="M202 291C183 262 161 240 132 224" stroke="#16A45B" stroke-width="5" stroke-linecap="round"/>
+  <path d="M204 266C231 244 250 220 263 190" stroke="#16A45B" stroke-width="5" stroke-linecap="round"/>
+  <path d="M201 303C178 294 158 288 134 289" stroke="#16A45B" stroke-width="5" stroke-linecap="round"/>
+  <path d="M205 306C229 291 250 276 267 253" stroke="#16A45B" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- leaves -->
+  <path d="M123 211C124 176 148 146 181 135C192 170 175 206 143 221C135 225 127 220 123 211Z" fill="url(#leaf)" stroke="#16A45B" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M137 219C151 194 165 173 181 135" stroke="#16A45B" stroke-width="3" stroke-linecap="round" opacity="0.75"/>
+
+  <path d="M221 165C231 125 260 99 298 91C309 132 292 172 253 190C239 196 225 184 221 165Z" fill="url(#leaf)" stroke="#16A45B" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M247 178C264 145 281 121 298 91" stroke="#16A45B" stroke-width="3" stroke-linecap="round" opacity="0.75"/>
+
+  <path d="M129 285C150 263 182 258 207 274C194 302 162 317 134 306C125 302 123 292 129 285Z" fill="url(#leaf)" stroke="#16A45B" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M142 297C163 288 184 281 207 274" stroke="#16A45B" stroke-width="3" stroke-linecap="round" opacity="0.75"/>
+
+  <path d="M248 246C271 222 306 216 333 233C317 265 281 282 252 269C243 265 241 253 248 246Z" fill="url(#leaf)" stroke="#16A45B" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M261 260C284 251 305 242 333 233" stroke="#16A45B" stroke-width="3" stroke-linecap="round" opacity="0.75"/>
+
+  <!-- success circle -->
+  <circle cx="345" cy="338" r="58" fill="#F4FBF7" stroke="#159653" stroke-width="6"/>
+  <path d="M318 338L338 358L378 313" stroke="#159653" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
