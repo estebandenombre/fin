@@ -118,6 +118,9 @@ create policy "Users can delete own banks"
 alter table public.finance_transactions
   add column if not exists bank_id bigint references public.finance_banks(id) on delete set null;
 
+alter table public.finance_transactions
+  add column if not exists is_deductible boolean not null default false;
+
 alter table public.finance_budgets enable row level security;
 
 drop policy if exists "Users can read own budgets" on public.finance_budgets;

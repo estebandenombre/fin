@@ -10,7 +10,9 @@ import {
   Car,
   ChartSpline,
   ChevronDown,
+  Download,
   Ellipsis,
+  FolderOpen,
   HeartPulse,
   Home as HomeIcon,
   Landmark,
@@ -66,6 +68,7 @@ type Transaction = {
   month: string;
   date: string;
   bankId: number | null;
+  isDeductible: boolean;
 };
 
 type FinanceTransactionRow = {
@@ -77,6 +80,7 @@ type FinanceTransactionRow = {
   period: string;
   transaction_date: string;
   bank_id?: number | null;
+  is_deductible?: boolean | null;
 };
 
 type FinanceBudgetRow = {
@@ -762,6 +766,7 @@ function normalizeTransactions(transactions: Transaction[], paydayDay: number) {
       ...legacyTransaction,
       date,
       month: getPeriodKeyForDate(date, paydayDay),
+      isDeductible: Boolean((legacyTransaction as Transaction).isDeductible),
     };
   });
 }
@@ -776,6 +781,7 @@ function mapTransactionRow(row: FinanceTransactionRow): Transaction {
     month: row.period,
     date: row.transaction_date,
     bankId: row.bank_id ?? null,
+    isDeductible: Boolean(row.is_deductible),
   };
 }
 
@@ -787,7 +793,65 @@ function mapBudgetRow(row: FinanceBudgetRow): BudgetRecord {
   };
 }
 
+function csvEscapeField(value: string): string {
+  if (/[";\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function buildMovementsCsvExport(rows: Transaction[], banks: Bank[]): string {
+  const delimiter = ";";
+  const header = [
+    "Fecha",
+    "Concepto",
+    "Tipo",
+    "Categoría",
+    "Importe",
+    "Banco",
+    "Deducible",
+    "Periodo",
+  ];
+  const lines = [header.join(delimiter)];
+  const sorted = [...rows].sort((a, b) => {
+    if (a.date !== b.date) {
+      return a.date < b.date ? -1 : 1;
+    }
+    return a.id - b.id;
+  });
+  for (const t of sorted) {
+    const bankName = t.bankId != null ? banks.find((b) => b.id === t.bankId)?.name ?? "" : "";
+    const importe = t.amount.toFixed(2).replace(".", ",");
+    const row = [
+      csvEscapeField(t.date),
+      csvEscapeField(t.description),
+      csvEscapeField(t.type === "expense" ? "Gasto" : "Ingreso"),
+      csvEscapeField((t.category || "General").trim() || "General"),
+      csvEscapeField(importe),
+      csvEscapeField(bankName),
+      csvEscapeField(t.type === "expense" && t.isDeductible ? "Sí" : "No"),
+      csvEscapeField(t.month),
+    ];
+    lines.push(row.join(delimiter));
+  }
+  return `\uFEFF${lines.join("\r\n")}`;
+}
+
+function downloadCsvFile(filename: string, csvContent: string) {
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 function createTransactionPayload(transaction: Transaction, userId: string) {
+  const isDeductible = transaction.type === "expense" && transaction.isDeductible;
   return {
     user_id: userId,
     description: transaction.description,
@@ -797,6 +861,7 @@ function createTransactionPayload(transaction: Transaction, userId: string) {
     period: transaction.month,
     transaction_date: transaction.date,
     bank_id: transaction.bankId,
+    is_deductible: isDeductible,
   };
 }
 
@@ -1053,11 +1118,16 @@ function FinanceApp() {
   const [movementFilterBankId, setMovementFilterBankId] = useState<number | "">("");
   const [banksPanelCollapsed, setBanksPanelCollapsed] = useState(true);
   const [chartsPanelCollapsed, setChartsPanelCollapsed] = useState(true);
+  const [deductiblePanelCollapsed, setDeductiblePanelCollapsed] = useState(true);
   const [bankDraftName, setBankDraftName] = useState("");
   const [editingBankId, setEditingBankId] = useState<number | null>(null);
+  const [expenseDeductible, setExpenseDeductible] = useState(false);
 
   function setMovementType(next: TransactionType) {
     setType(next);
+    if (next === "income") {
+      setExpenseDeductible(false);
+    }
     const allowed = categoriesForType(next);
     setCategory((current) => (allowed.includes(current) ? current : "General"));
   }
@@ -1075,6 +1145,7 @@ function FinanceApp() {
     setType("expense");
     setCategory("General");
     setFormBankId(null);
+    setExpenseDeductible(false);
     setMovementDate(getDefaultMovementDate(selectedPeriod, paydayDay));
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [paydayDay, selectedPeriod]);
@@ -1165,7 +1236,7 @@ function FinanceApp() {
 
         const transactionsResult = await db
           .from("finance_transactions")
-          .select("id, description, amount, type, category, period, transaction_date, bank_id")
+          .select("id, description, amount, type, category, period, transaction_date, bank_id, is_deductible")
           .eq("user_id", userId)
           .order("transaction_date", { ascending: false })
           .order("id", { ascending: false });
@@ -1380,6 +1451,17 @@ function FinanceApp() {
   const visibleTotals = globalSummaryOpen ? globalTotals : totals;
   const visibleTransactions = globalSummaryOpen ? transactions : periodTransactions;
   const greetingToday = useMemo(() => formatGreetingForToday(new Date()), []);
+
+  const deductibleExpenses = useMemo(() => {
+    return sortTransactionsForList(
+      visibleTransactions.filter((t) => t.type === "expense" && t.isDeductible),
+      "recent",
+    );
+  }, [visibleTransactions]);
+
+  const deductibleTotal = useMemo(() => {
+    return deductibleExpenses.reduce((sum, row) => sum + row.amount, 0);
+  }, [deductibleExpenses]);
 
   const flowItems = useMemo(() => {
     return createFlowItems(visibleTransactions, visibleTotals, flowExpenseGrouping);
@@ -1825,6 +1907,7 @@ function FinanceApp() {
     setType("expense");
     setCategory("General");
     setFormBankId(null);
+    setExpenseDeductible(false);
     setMovementDate(getDefaultMovementDate(selectedPeriod, paydayDay));
   }
 
@@ -1836,6 +1919,7 @@ function FinanceApp() {
     setCategory(categoryOrDefaultForType(transaction.category, transaction.type));
     setMovementDate(transaction.date);
     setFormBankId(transaction.bankId);
+    setExpenseDeductible(transaction.type === "expense" && transaction.isDeductible);
     requestAnimationFrame(() => {
       movementFormPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
@@ -1872,10 +1956,11 @@ function FinanceApp() {
           transaction_date: movementDate,
           type,
           bank_id: formBankId,
+          is_deductible: type === "expense" && expenseDeductible,
         })
         .eq("user_id", supabaseUserId)
         .eq("id", editingTransactionId)
-        .select("id, description, amount, type, category, period, transaction_date, bank_id")
+        .select("id, description, amount, type, category, period, transaction_date, bank_id, is_deductible")
         .single();
 
       if (updateResult.error) {
@@ -1897,12 +1982,13 @@ function FinanceApp() {
         month: transactionPeriod,
         type,
         bankId: formBankId,
+        isDeductible: type === "expense" && expenseDeductible,
       };
 
       const insertResult = await db
         .from("finance_transactions")
         .insert(createTransactionPayload(pendingTransaction, supabaseUserId))
-        .select("id, description, amount, type, category, period, transaction_date, bank_id")
+        .select("id, description, amount, type, category, period, transaction_date, bank_id, is_deductible")
         .single();
 
       if (insertResult.error) {
@@ -1979,6 +2065,9 @@ function FinanceApp() {
                 <Landmark aria-hidden="true" size={11} />
                 {banks.find((b) => b.id === transaction.bankId)?.name ?? "Banco"}
               </span>
+            ) : null}
+            {transaction.type === "expense" && transaction.isDeductible ? (
+              <span className="transaction-deductible-pill">Deducible</span>
             ) : null}
             <time className="transaction-date" dateTime={transaction.date}>
               {formatDateShort(inputValueToDate(transaction.date))}
@@ -2242,7 +2331,62 @@ function FinanceApp() {
             {currency.format(visibleTotals.balance)}
           </strong>
         </article>
+        <article className="metric">
+          <span>Deducibles</span>
+          <strong className="deductible-amount">-{currency.format(deductibleTotal)}</strong>
+        </article>
       </section>
+
+      {!globalSummaryOpen ? (
+        <section
+          className={`panel deductible-panel${deductiblePanelCollapsed ? " deductible-panel--collapsed" : ""}`}
+          aria-label="Gastos deducibles del periodo"
+        >
+          <div className="panel-heading deductible-panel-heading">
+            <h2 className="deductible-panel-title">
+              <FolderOpen aria-hidden="true" size={18} />
+              Gastos deducibles
+            </h2>
+            <div className="budget-panel-heading__actions">
+              <button
+                aria-controls="deductible-panel-body"
+                aria-expanded={!deductiblePanelCollapsed}
+                className="budget-collapse-toggle"
+                type="button"
+                onClick={() => setDeductiblePanelCollapsed((current) => !current)}
+              >
+                <ChevronDown
+                  aria-hidden="true"
+                  className={deductiblePanelCollapsed ? "" : "budget-collapse-toggle__icon--open"}
+                  size={17}
+                />
+                <span>{deductiblePanelCollapsed ? "Mostrar" : "Ocultar"}</span>
+              </button>
+            </div>
+          </div>
+          {!deductiblePanelCollapsed ? (
+            <div className="deductible-panel-body" id="deductible-panel-body">
+              <p className="deductible-panel-lead">
+                Carpeta con los gastos marcados como deducibles en este periodo. Útil para cierres fiscales o
+                justificantes.
+              </p>
+              <p className="deductible-panel__total">
+                Suma deducible: <span className="deductible-amount">-{currency.format(deductibleTotal)}</span>
+                {deductibleExpenses.length > 0 ? (
+                  <span className="list-panel-meta"> · {deductibleExpenses.length} movimientos</span>
+                ) : null}
+              </p>
+              {deductibleExpenses.length === 0 ? (
+                <p className="empty-state">No hay gastos deducibles en este periodo.</p>
+              ) : (
+                <div className="deductible-panel__list">
+                  {deductibleExpenses.map((row) => renderTransactionCard(row, "full"))}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       {!globalSummaryOpen ? (
         <section
@@ -3014,6 +3158,23 @@ function FinanceApp() {
                 </span>
               </label>
 
+              {type === "expense" ? (
+                <label className="form-deductible" htmlFor="field-expense-deductible">
+                  <input
+                    checked={expenseDeductible}
+                    id="field-expense-deductible"
+                    type="checkbox"
+                    onChange={(event) => setExpenseDeductible(event.target.checked)}
+                  />
+                  <span>
+                    Marcar como deducible
+                    <span className="form-deductible__hint">
+                      Aparecerá en la carpeta de gastos deducibles de este periodo.
+                    </span>
+                  </span>
+                </label>
+              ) : null}
+
               {banks.length > 0 ? (
                 <label htmlFor="field-movement-bank">
                   Banco / Cuenta
@@ -3152,6 +3313,25 @@ function FinanceApp() {
                     className={movementFiltersOpen ? "filters-chevron filters-chevron--open" : "filters-chevron"}
                     size={18}
                   />
+                </button>
+                <button
+                  className="transaction-filters-toggle"
+                  disabled={!interactive || filteredPeriodTransactions.length === 0}
+                  type="button"
+                  title="Descarga un CSV con los movimientos del listado (respeta filtros activos)."
+                  aria-label="Exportar movimientos del periodo a archivo CSV"
+                  onClick={() => {
+                    if (filteredPeriodTransactions.length === 0) {
+                      return;
+                    }
+                    const csv = buildMovementsCsvExport(filteredPeriodTransactions, banks);
+                    const safePeriod = selectedPeriod.replace(/[^\d-]/g, "") || "periodo";
+                    const stamp = new Date().toISOString().slice(0, 10);
+                    downloadCsvFile(`movimientos_${safePeriod}_${stamp}.csv`, csv);
+                  }}
+                >
+                  <Download aria-hidden="true" size={17} />
+                  Exportar
                 </button>
               </div>
 

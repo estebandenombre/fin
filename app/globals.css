@@ -866,9 +866,113 @@ h2 {
 
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
   gap: 14px;
   margin-bottom: 18px;
+}
+
+.deductible-panel {
+  margin-bottom: 24px;
+}
+
+.deductible-panel--collapsed {
+  padding-bottom: 18px;
+}
+
+.deductible-panel-heading {
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.deductible-panel--collapsed .deductible-panel-heading {
+  margin-bottom: 0;
+}
+
+.deductible-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.deductible-panel-title svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.deductible-panel-lead {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.deductible-panel__total {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.deductible-panel__list {
+  display: grid;
+  gap: 10px;
+}
+
+.deductible-panel__list .transaction {
+  margin: 0;
+}
+
+.form-deductible {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+
+.form-deductible input {
+  margin-top: 3px;
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+  accent-color: #166534;
+  cursor: pointer;
+}
+
+.form-deductible span {
+  font-weight: 600;
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+
+.form-deductible .form-deductible__hint {
+  display: block;
+  margin-top: 2px;
+  font-weight: 500;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.transaction-deductible-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #bbf7d0;
+  background: #ecfdf3;
+  color: #166534;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .metric,
@@ -2255,6 +2359,11 @@ input:disabled {
 
 .expense {
   color: var(--expense);
+}
+
+.deductible-amount {
+  color: #5c6370;
+  font-variant-numeric: tabular-nums;
 }
 
 .icon-button {
