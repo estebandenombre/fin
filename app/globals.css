@@ -818,9 +818,9 @@ h2 {
 .tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(110px, 1fr));
-  gap: 6px;
+  gap: 8px;
   margin-bottom: 18px;
-  padding: 5px;
+  padding: 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface-muted);
@@ -829,17 +829,39 @@ h2 {
 
 .tabs button {
   min-height: 40px;
+  padding: 0 10px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted);
   font-weight: 600;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.tabs button:hover {
+  color: var(--text);
+  background: rgba(30, 63, 79, 0.06);
 }
 
 .tabs button.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: var(--shadow);
+  border: 1px solid rgba(30, 63, 79, 0.18);
+  font-weight: 650;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.tabs button.active:hover {
+  background: #fbfbfa;
+  color: var(--text);
+}
+
+.tabs button:focus-visible {
+  outline: 2px solid #374151;
+  outline-offset: 1px;
 }
 
 .summary-grid {
@@ -905,6 +927,37 @@ label,
 
 .charts-panel {
   min-width: 0;
+}
+
+.charts-panel--collapsed {
+  padding-bottom: 18px;
+}
+
+.charts-panel-heading {
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.charts-panel-heading .charts-header {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.charts-panel-heading .charts-header .title-block {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.charts-panel-heading .charts-header .title-block-title {
+  margin: 0;
+  line-height: 1.25;
+}
+
+.charts-panel--collapsed .charts-panel-heading {
+  margin-bottom: 0;
 }
 
 .panel {
@@ -1131,19 +1184,62 @@ select:focus {
   gap: 8px;
 }
 
-.list-panel .panel-heading {
-  align-items: baseline;
+.list-panel-heading {
+  align-items: flex-start;
+  gap: 10px 16px;
+}
+
+.list-panel-heading-main {
+  display: grid;
+  gap: 3px;
+}
+
+.list-panel-greeting {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.list-panel-heading-stats {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  min-width: 0;
 }
 
 .list-panel-meta {
   min-width: 0;
-  max-width: min(100%, 340px);
+  max-width: min(100%, 420px);
   overflow: hidden;
   color: var(--muted);
   font-size: 0.88rem;
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.list-panel-balance-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.list-panel-balance-badge--positive {
+  color: #166534;
+  background: #ecfdf3;
+  border-color: #bbf7d0;
+}
+
+.list-panel-balance-badge--negative {
+  color: #991b1b;
+  background: #fef2f2;
+  border-color: #fecaca;
 }
 
 .list-panel-toolbar {
@@ -1256,6 +1352,54 @@ select:focus {
   flex: 1 1 200px;
   width: auto;
   min-width: 0;
+}
+
+.movement-grouping-toggle {
+  display: flex;
+  flex: 1 1 220px;
+  min-width: min(100%, 220px);
+  padding: 3px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface-muted);
+}
+
+.movement-grouping-toggle button {
+  flex: 1 1 0;
+  min-height: 40px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.movement-grouping-toggle button.active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.movement-grouping-toggle button:hover:not(:disabled):not(.active) {
+  color: var(--text);
+  background: rgba(30, 63, 79, 0.06);
+}
+
+.movement-grouping-toggle button:focus-visible {
+  outline: 2px solid #374151;
+  outline-offset: 1px;
+}
+
+.movement-grouping-toggle button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .transaction-filters-toggle {
@@ -1398,9 +1542,9 @@ input:disabled {
 .chart-selector {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  gap: 8px;
   margin-bottom: 16px;
-  padding: 5px;
+  padding: 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface-muted);
@@ -1417,12 +1561,28 @@ input:disabled {
   color: var(--muted);
   font-weight: 600;
   font-size: clamp(0.72rem, 2.6vw, 0.88rem);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .chart-selector button.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: var(--shadow);
+  font-weight: 650;
+  border: 1px solid rgba(30, 63, 79, 0.16);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.chart-selector button:hover:not(.active) {
+  color: var(--text);
+  background: rgba(30, 63, 79, 0.06);
+}
+
+.chart-selector button:focus-visible {
+  outline: 2px solid #374151;
+  outline-offset: 1px;
 }
 
 .chart-stage {
@@ -1761,10 +1921,10 @@ input:disabled {
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  padding: 2px;
+  padding: 3px;
   border-radius: 6px;
   border: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--surface-muted);
   box-sizing: border-box;
 }
 
@@ -1773,7 +1933,7 @@ input:disabled {
   min-width: 0;
   min-height: 32px;
   padding: 0 10px;
-  border: none;
+  border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
@@ -1781,16 +1941,19 @@ input:disabled {
   font-weight: 600;
   text-align: center;
   cursor: pointer;
-  transition: color 0.12s ease, background 0.12s ease;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 }
 
-.flow-expense-grouping__toggle button:hover {
+.flow-expense-grouping__toggle button:hover:not(.active) {
   color: var(--text);
+  background: rgba(30, 63, 79, 0.06);
 }
 
 .flow-expense-grouping__toggle button.active {
   color: var(--text);
-  background: var(--surface-muted);
+  background: var(--surface);
+  border: 1px solid rgba(30, 63, 79, 0.16);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 .flow-expense-grouping__toggle button:focus-visible {
@@ -2953,6 +3116,16 @@ input:disabled {
 
   .month-row span {
     justify-self: start;
+  }
+
+  .list-panel-heading-stats {
+    width: 100%;
+    justify-items: start;
+  }
+
+  .list-panel-meta {
+    max-width: 100%;
+    text-align: left;
   }
 
   .global-grid {

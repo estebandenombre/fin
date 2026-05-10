@@ -50,6 +50,7 @@ type SyncStatus = "loading" | "syncing" | "synced" | "error";
 
 type MovementFilterType = "all" | TransactionType;
 type MovementListOrder = "recent" | "category" | "week";
+type MovementGrouping = "category" | "none";
 
 type Bank = {
   id: number;
@@ -419,6 +420,15 @@ function formatMonthTitleParts(period: string): { month: string; year: string } 
   };
 }
 
+function formatGreetingForToday(date: Date): string {
+  const weekday = new Intl.DateTimeFormat("es-ES", { weekday: "long" }).format(date);
+  const dayMonth = new Intl.DateTimeFormat("es-ES", {
+    day: "numeric",
+    month: "long",
+  }).format(date);
+  return `Hola, hoy es ${weekday} ${dayMonth}.`;
+}
+
 function getDefaultMovementDate(period: string, paydayDay: number) {
   const today = todayInputValue();
   const todayPeriod = getPeriodKeyForDate(today, paydayDay);
@@ -484,8 +494,36 @@ function sortCategoryGroups(groups: TransactionCategoryGroup[], mode: "recent" |
   });
 }
 
+function sortTransactionsForList(transactions: Transaction[], mode: "recent" | "category"): Transaction[] {
+  return [...transactions].sort((a, b) => {
+    if (mode === "recent") {
+      if (a.date !== b.date) {
+        return a.date < b.date ? 1 : -1;
+      }
+      return b.id - a.id;
+    }
+
+    const categoryA = a.category.trim() || "General";
+    const categoryB = b.category.trim() || "General";
+    const categoryOrder = categoryA.localeCompare(categoryB, "es");
+    if (categoryOrder !== 0) {
+      return categoryOrder;
+    }
+
+    if (a.type !== b.type) {
+      return a.type === "expense" ? -1 : 1;
+    }
+
+    if (a.date !== b.date) {
+      return a.date < b.date ? 1 : -1;
+    }
+    return b.id - a.id;
+  });
+}
+
 type MovementWeekSection = {
   groups: TransactionCategoryGroup[];
+  items: Transaction[];
   heading: string;
   weekStart: string;
 };
@@ -519,13 +557,14 @@ function buildMovementWeekSections(transactions: Transaction[]): MovementWeekSec
 
   return weekKeys.map((weekStart) => {
     const weekTransactions = byWeek.get(weekStart)!;
+    const items = sortTransactionsForList(weekTransactions, "recent");
     const groups = groupByCategoryAndType(weekTransactions);
     sortCategoryGroups(groups, "recent");
     const mondayDate = inputValueToDate(weekStart);
     const sundayDate = new Date(mondayDate);
     sundayDate.setDate(sundayDate.getDate() + 6);
     const heading = `${formatDateShort(mondayDate)} – ${formatDateShort(sundayDate)}`;
-    return { groups, heading, weekStart };
+    return { groups, items, heading, weekStart };
   });
 }
 
@@ -998,6 +1037,13 @@ function FinanceApp() {
   const [movementSearch, setMovementSearch] = useState("");
   const [movementFiltersOpen, setMovementFiltersOpen] = useState(false);
   const [movementListOrder, setMovementListOrder] = useState<MovementListOrder>("recent");
+  const [movementGrouping, setMovementGrouping] = useState<MovementGrouping>(() => {
+    if (typeof window === "undefined") {
+      return "category";
+    }
+    const savedGrouping = window.localStorage.getItem("finance:movementGrouping");
+    return savedGrouping === "none" || savedGrouping === "category" ? savedGrouping : "category";
+  });
   const [editingTransactionId, setEditingTransactionId] = useState<number | null>(null);
   const movementFormPanelRef = useRef<HTMLFormElement | null>(null);
 
@@ -1006,6 +1052,7 @@ function FinanceApp() {
   const [formBankId, setFormBankId] = useState<number | null>(null);
   const [movementFilterBankId, setMovementFilterBankId] = useState<number | "">("");
   const [banksPanelCollapsed, setBanksPanelCollapsed] = useState(true);
+  const [chartsPanelCollapsed, setChartsPanelCollapsed] = useState(true);
   const [bankDraftName, setBankDraftName] = useState("");
   const [editingBankId, setEditingBankId] = useState<number | null>(null);
 
@@ -1031,6 +1078,10 @@ function FinanceApp() {
     setMovementDate(getDefaultMovementDate(selectedPeriod, paydayDay));
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [paydayDay, selectedPeriod]);
+
+  useEffect(() => {
+    window.localStorage.setItem("finance:movementGrouping", movementGrouping);
+  }, [movementGrouping]);
 
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
@@ -1302,10 +1353,18 @@ function FinanceApp() {
       };
     }
 
+    const sortMode = movementListOrder === "category" ? "category" : "recent";
+    if (movementGrouping === "none") {
+      return {
+        kind: "plain" as const,
+        items: sortTransactionsForList(filteredPeriodTransactions, sortMode),
+      };
+    }
+
     const groups = groupByCategoryAndType(filteredPeriodTransactions);
-    sortCategoryGroups(groups, movementListOrder);
-    return { kind: "flat" as const, groups };
-  }, [filteredPeriodTransactions, movementListOrder]);
+    sortCategoryGroups(groups, sortMode);
+    return { kind: "grouped" as const, groups };
+  }, [filteredPeriodTransactions, movementGrouping, movementListOrder]);
 
   const hasActiveMovementFilters =
     movementFilterType !== "all" || movementFilterCategory !== "" || movementSearch.trim() !== "" || movementFilterBankId !== "";
@@ -1320,6 +1379,7 @@ function FinanceApp() {
 
   const visibleTotals = globalSummaryOpen ? globalTotals : totals;
   const visibleTransactions = globalSummaryOpen ? transactions : periodTransactions;
+  const greetingToday = useMemo(() => formatGreetingForToday(new Date()), []);
 
   const flowItems = useMemo(() => {
     return createFlowItems(visibleTransactions, visibleTotals, flowExpenseGrouping);
@@ -2195,7 +2255,7 @@ function FinanceApp() {
               Presupuestos de gasto
             </h2>
             <div className="budget-panel-heading__actions">
-              <span className="list-panel-meta">{formatPeriod(selectedPeriod, paydayDay)}</span>
+             
               <button
                 aria-controls="budget-panel-body"
                 aria-expanded={!budgetPanelCollapsed}
@@ -2593,15 +2653,38 @@ function FinanceApp() {
       ) : null}
 
       {!globalSummaryOpen ? (
-      <section className="panel charts-panel" aria-label="Graficas utiles">
-        <div className="charts-header">
-          <div>
-            <h2>Graficas</h2>
-            <span>{formatPeriod(selectedPeriod, paydayDay)}</span>
+      <section
+        className={`panel charts-panel${chartsPanelCollapsed ? " charts-panel--collapsed" : ""}`}
+        aria-label="Graficas utiles"
+      >
+        <div className="panel-heading charts-panel-heading">
+          <div className="charts-header">
+            <div className="title-block">
+              <ChartSpline aria-hidden="true" size={19} />
+              <h2 className="title-block-title">Graficas</h2>
+            </div>
+           
           </div>
-          <ChartSpline aria-hidden="true" size={19} />
+          <div className="budget-panel-heading__actions">
+            <button
+              aria-controls="charts-panel-body"
+              aria-expanded={!chartsPanelCollapsed}
+              className="budget-collapse-toggle"
+              type="button"
+              onClick={() => setChartsPanelCollapsed((current) => !current)}
+            >
+              <ChevronDown
+                aria-hidden="true"
+                className={chartsPanelCollapsed ? "" : "budget-collapse-toggle__icon--open"}
+                size={17}
+              />
+              <span>{chartsPanelCollapsed ? "Mostrar" : "Ocultar"}</span>
+            </button>
+          </div>
         </div>
 
+        {!chartsPanelCollapsed ? (
+        <div className="charts-panel-body" id="charts-panel-body">
         <div className="chart-selector" role="tablist" aria-label="Seleccionar grafica">
           <button
             aria-selected={activeChart === "flow"}
@@ -2840,6 +2923,8 @@ function FinanceApp() {
           )}
 
         </div>
+        </div>
+        ) : null}
       </section>
       ) : null}
 
@@ -2983,19 +3068,33 @@ function FinanceApp() {
             </form>
 
             <section className="panel list-panel" aria-label="Listado de movimientos">
-              <div className="panel-heading">
-                <h2>Movimientos</h2>
-                <span className="list-panel-meta">
-                  {formatPeriod(selectedPeriod, paydayDay)}
-                  {periodTransactions.length > 0 ? (
-                    <>
-                      {" · "}
-                      {filteredPeriodTransactions.length === periodTransactions.length
-                        ? String(periodTransactions.length)
-                        : `${filteredPeriodTransactions.length} de ${periodTransactions.length}`}
-                    </>
-                  ) : null}
-                </span>
+              <div className="panel-heading list-panel-heading">
+                <div className="list-panel-heading-main">
+                  <h2>Movimientos</h2>
+                  <p className="list-panel-greeting">{greetingToday}</p>
+                </div>
+                <div className="list-panel-heading-stats">
+                  <span
+                    className={
+                      totals.balance >= 0
+                        ? "list-panel-balance-badge list-panel-balance-badge--positive"
+                        : "list-panel-balance-badge list-panel-balance-badge--negative"
+                    }
+                  >
+                    Saldo actual: {currency.format(totals.balance)}
+                  </span>
+                  <span className="list-panel-meta">
+                    {formatPeriod(selectedPeriod, paydayDay)}
+                    {periodTransactions.length > 0 ? (
+                      <>
+                        {" · "}
+                        {filteredPeriodTransactions.length === periodTransactions.length
+                          ? String(periodTransactions.length)
+                          : `${filteredPeriodTransactions.length} de ${periodTransactions.length}`}
+                      </>
+                    ) : null}
+                  </span>
+                </div>
               </div>
 
               <div className="list-panel-toolbar">
@@ -3015,6 +3114,26 @@ function FinanceApp() {
                   </select>
                   <ChevronDown aria-hidden="true" className="select-shell__chevron" size={18} />
                 </label>
+                <div className="movement-grouping-toggle" role="group" aria-label="Vista del histórico de movimientos">
+                  <button
+                    type="button"
+                    className={movementGrouping === "category" ? "active" : ""}
+                    aria-pressed={movementGrouping === "category"}
+                    disabled={!interactive}
+                    onClick={() => setMovementGrouping("category")}
+                  >
+                    Agrupado
+                  </button>
+                  <button
+                    type="button"
+                    className={movementGrouping === "none" ? "active" : ""}
+                    aria-pressed={movementGrouping === "none"}
+                    disabled={!interactive}
+                    onClick={() => setMovementGrouping("none")}
+                  >
+                    Lista
+                  </button>
+                </div>
                 <button
                   aria-controls="transaction-filters-panel"
                   aria-expanded={movementFiltersOpen}
@@ -3136,12 +3255,16 @@ function FinanceApp() {
                     >
                       <h3 className="transaction-week-heading">Semana · {section.heading}</h3>
                       <div className="transaction-week-groups">
-                        {section.groups.map((group) => renderCategoryGroup(group))}
+                        {movementGrouping === "category"
+                          ? section.groups.map((group) => renderCategoryGroup(group))
+                          : section.items.map((item) => renderTransactionCard(item, "full"))}
                       </div>
                     </section>
                   ))
                 ) : (
-                  movementListRender.groups.map((group) => renderCategoryGroup(group))
+                  movementListRender.kind === "grouped"
+                    ? movementListRender.groups.map((group) => renderCategoryGroup(group))
+                    : movementListRender.items.map((item) => renderTransactionCard(item, "full"))
                 )}
               </div>
             </section>
