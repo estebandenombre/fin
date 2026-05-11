@@ -10,8 +10,10 @@ import {
   Car,
   ChartSpline,
   ChevronDown,
+  Copy,
   Download,
   Ellipsis,
+  FileText,
   FolderOpen,
   HeartPulse,
   Home as HomeIcon,
@@ -19,16 +21,18 @@ import {
   LayoutDashboard,
   ListFilter,
   LogOut,
-  PlugZap,
-  Popcorn,
+  Paperclip,
   Pencil,
   PiggyBank,
   Plus,
+  PlugZap,
+  Popcorn,
   Save,
   Tag,
   Trash2,
   UtensilsCrossed,
   Wallet,
+  X,
 } from "lucide-react";
 import {
   Bar,
@@ -87,6 +91,27 @@ type FinanceBudgetRow = {
   period: string;
   category: string;
   amount: number | string;
+};
+
+type DeductibleDoc = {
+  id: number;
+  transactionId: number;
+  fileName: string;
+  filePath: string;
+  fileSize: number | null;
+  mimeType: string | null;
+  createdAt: string;
+  signedUrl?: string;
+};
+
+type DeductibleDocRow = {
+  id: number;
+  transaction_id: number;
+  file_name: string;
+  file_path: string;
+  file_size: number | null;
+  mime_type: string | null;
+  created_at: string;
 };
 
 type BudgetRecord = {
@@ -793,6 +818,18 @@ function mapBudgetRow(row: FinanceBudgetRow): BudgetRecord {
   };
 }
 
+function mapDeductibleDocRow(row: DeductibleDocRow): DeductibleDoc {
+  return {
+    id: Number(row.id),
+    transactionId: Number(row.transaction_id),
+    fileName: row.file_name,
+    filePath: row.file_path,
+    fileSize: row.file_size,
+    mimeType: row.mime_type,
+    createdAt: row.created_at,
+  };
+}
+
 function csvEscapeField(value: string): string {
   if (/[";\r\n]/.test(value)) {
     return `"${value.replace(/"/g, '""')}"`;
@@ -1122,6 +1159,12 @@ function FinanceApp() {
   const [bankDraftName, setBankDraftName] = useState("");
   const [editingBankId, setEditingBankId] = useState<number | null>(null);
   const [expenseDeductible, setExpenseDeductible] = useState(false);
+  const [deductibleDocs, setDeductibleDocs] = useState<DeductibleDoc[]>([]);
+  const [docsModalTransactionId, setDocsModalTransactionId] = useState<number | null>(null);
+  const [docUploadFile, setDocUploadFile] = useState<File | null>(null);
+  const [docUploading, setDocUploading] = useState(false);
+  const [docUploadError, setDocUploadError] = useState<string | null>(null);
+  const docFileInputRef = useRef<HTMLInputElement | null>(null);
 
   function setMovementType(next: TransactionType) {
     setType(next);
@@ -1275,6 +1318,29 @@ function FinanceApp() {
         }
 
         setBudgetRecords(remoteBudgets);
+
+        const docsResult = await db
+          .from("finance_deductible_docs")
+          .select("id, transaction_id, file_name, file_path, file_size, mime_type, created_at")
+          .eq("user_id", userId);
+
+        if (!docsResult.error && docsResult.data && docsResult.data.length > 0) {
+          const rawDocs = (docsResult.data as DeductibleDocRow[]).map(mapDeductibleDocRow);
+          const paths = rawDocs.map((d) => d.filePath);
+          const { data: signedList } = await db.storage
+            .from("deductible-docs")
+            .createSignedUrls(paths, 3600);
+          const urlMap: Record<string, string> = {};
+          if (signedList) {
+            for (const entry of signedList) {
+              const entryPath = entry.path as string | null;
+              if (entry.signedUrl && entryPath) urlMap[entryPath] = entry.signedUrl;
+            }
+          }
+          setDeductibleDocs(rawDocs.map((d) => ({ ...d, signedUrl: urlMap[d.filePath] })));
+        } else {
+          setDeductibleDocs([]);
+        }
 
         setConnectionError(null);
         setSyncStatus("synced");
@@ -1998,6 +2064,14 @@ function FinanceApp() {
 
       const savedTransaction = mapTransactionRow(insertResult.data as FinanceTransactionRow);
       setTransactions((current) => [savedTransaction, ...current]);
+      if (savedTransaction.isDeductible) {
+        setSelectedPeriod(transactionPeriod);
+        setDraftSelectedPeriod(transactionPeriod);
+        resetMovementForm();
+        setSyncStatus("synced");
+        openDocModal(savedTransaction.id);
+        return;
+      }
     }
 
     setSelectedPeriod(transactionPeriod);
@@ -2033,6 +2107,92 @@ function FinanceApp() {
   }
 
   const interactive = syncStatus === "synced";
+
+  function docsForTransaction(transactionId: number): DeductibleDoc[] {
+    return deductibleDocs.filter((d) => d.transactionId === transactionId);
+  }
+
+  function openDocModal(transactionId: number) {
+    setDocsModalTransactionId(transactionId);
+    setDocUploadFile(null);
+    setDocUploadError(null);
+  }
+
+  function closeDocModal() {
+    setDocsModalTransactionId(null);
+    setDocUploadFile(null);
+    setDocUploadError(null);
+  }
+
+  async function uploadDeductibleDoc(transactionId: number, file: File) {
+    if (!supabaseUserId) return;
+    setDocUploading(true);
+    setDocUploadError(null);
+    try {
+      const ext = file.name.split(".").pop() ?? "bin";
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const path = `${supabaseUserId}/${transactionId}/${Date.now()}-${safeName}`;
+      const { error: storageError } = await db.storage
+        .from("deductible-docs")
+        .upload(path, file, { contentType: file.type, upsert: false });
+      if (storageError) {
+        setDocUploadError(`Error al subir el archivo: ${storageError.message}`);
+        setDocUploading(false);
+        return;
+      }
+      const insertResult = await db
+        .from("finance_deductible_docs")
+        .insert({
+          user_id: supabaseUserId,
+          transaction_id: transactionId,
+          file_name: file.name,
+          file_path: path,
+          file_size: file.size,
+          mime_type: file.type || `application/${ext}`,
+        })
+        .select("id, transaction_id, file_name, file_path, file_size, mime_type, created_at")
+        .single();
+      if (insertResult.error) {
+        setDocUploadError(`Error al guardar el documento: ${insertResult.error.message}`);
+        setDocUploading(false);
+        return;
+      }
+      const newDoc = mapDeductibleDocRow(insertResult.data as DeductibleDocRow);
+      const { data: signedData } = await db.storage
+        .from("deductible-docs")
+        .createSignedUrl(path, 3600);
+      if (signedData?.signedUrl) {
+        newDoc.signedUrl = signedData.signedUrl;
+      }
+      setDeductibleDocs((current) => [...current, newDoc]);
+      closeDocModal();
+    } catch {
+      setDocUploadError("Error inesperado al subir el documento.");
+    } finally {
+      setDocUploading(false);
+    }
+  }
+
+  async function deleteDeductibleDoc(doc: DeductibleDoc) {
+    if (!supabaseUserId) return;
+    await db.storage.from("deductible-docs").remove([doc.filePath]);
+    await db.from("finance_deductible_docs").delete().eq("id", doc.id).eq("user_id", supabaseUserId);
+    setDeductibleDocs((current) => current.filter((d) => d.id !== doc.id));
+  }
+
+  async function openDocUrl(doc: DeductibleDoc) {
+    if (doc.signedUrl) {
+      window.open(doc.signedUrl, "_blank");
+      return;
+    }
+    const { data } = await db.storage.from("deductible-docs").createSignedUrl(doc.filePath, 3600);
+    if (data?.signedUrl) {
+      setDeductibleDocs((current) =>
+        current.map((d) => (d.id === doc.id ? { ...d, signedUrl: data.signedUrl } : d)),
+      );
+      window.open(data.signedUrl, "_blank");
+    }
+  }
 
   function renderTransactionCard(transaction: Transaction, variant: "full" | "nested") {
     const isFormEditingThis = editingTransactionId === transaction.id;
@@ -2380,7 +2540,61 @@ function FinanceApp() {
                 <p className="empty-state">No hay gastos deducibles en este periodo.</p>
               ) : (
                 <div className="deductible-panel__list">
-                  {deductibleExpenses.map((row) => renderTransactionCard(row, "full"))}
+                  {deductibleExpenses.map((row) => {
+                    const docs = docsForTransaction(row.id);
+                    return (
+                      <div className="deductible-item" key={row.id}>
+                        {renderTransactionCard(row, "full")}
+                        <div className="deductible-item-docs">
+                          {docs.length === 0 ? (
+                            <p className="doc-chip__pending">
+                              <Paperclip size={12} aria-hidden="true" />
+                              Sin justificante adjunto
+                            </p>
+                          ) : (
+                            docs.map((doc) => (
+                              <div className="doc-chip" key={doc.id}>
+                                <FileText size={13} aria-hidden="true" />
+                                <button
+                                  className="doc-chip__name"
+                                  type="button"
+                                  title={`Abrir ${doc.fileName}`}
+                                  onClick={() => void openDocUrl(doc)}
+                                >
+                                  {doc.fileName}
+                                </button>
+                                <span className="doc-chip__date">
+                                  {new Date(doc.createdAt).toLocaleDateString("es-ES", {
+                                    day: "2-digit",
+                                    month: "short",
+                                  })}
+                                </span>
+                                <button
+                                  className="doc-chip__delete"
+                                  type="button"
+                                  title="Eliminar documento"
+                                  aria-label={`Eliminar ${doc.fileName}`}
+                                  disabled={!interactive}
+                                  onClick={() => void deleteDeductibleDoc(doc)}
+                                >
+                                  <X size={12} aria-hidden="true" />
+                                </button>
+                              </div>
+                            ))
+                          )}
+                          <button
+                            className="doc-add-btn"
+                            type="button"
+                            disabled={!interactive}
+                            onClick={() => openDocModal(row.id)}
+                          >
+                            <Paperclip size={13} aria-hidden="true" />
+                            {docs.length === 0 ? "Adjuntar justificante" : "Añadir otro"}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -3585,6 +3799,129 @@ function FinanceApp() {
         </section>
         </section>
       )}
+
+      {docsModalTransactionId !== null && (() => {
+        const modalTransaction = transactions.find((t) => t.id === docsModalTransactionId) ?? null;
+        return (
+          <div
+            className="doc-modal-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="doc-modal-title"
+            onKeyDown={(e) => { if (e.key === "Escape") closeDocModal(); }}
+            onClick={(e) => { if (e.target === e.currentTarget) closeDocModal(); }}
+          >
+            <div className="doc-modal">
+              <button
+                className="doc-modal__close"
+                type="button"
+                aria-label="Cerrar"
+                onClick={closeDocModal}
+              >
+                <X size={16} aria-hidden="true" />
+              </button>
+
+              <div className="doc-modal__icon">
+                <Paperclip size={22} aria-hidden="true" />
+              </div>
+
+              <h3 id="doc-modal-title">Adjuntar justificante</h3>
+
+              {modalTransaction && (
+                <p className="doc-modal__context">
+                  <strong>{modalTransaction.description}</strong>
+                  {" · "}
+                  <span className="expense">-{currency.format(modalTransaction.amount)}</span>
+                </p>
+              )}
+
+              <p className="doc-modal__lead">
+                Adjunta el documento que justifica este gasto deducible (factura, recibo, PDF…).
+                Podrás añadir o eliminar documentos en cualquier momento desde el contenedor de gastos deducibles.
+              </p>
+
+              <label
+                className="doc-modal__dropzone"
+                htmlFor="doc-modal-file-input"
+              >
+                <FileText size={28} aria-hidden="true" />
+                <span>
+                  Haz clic para seleccionar un archivo<br />
+                  <small>PDF, imagen — máx. 10 MB</small>
+                </span>
+                <input
+                  ref={docFileInputRef}
+                  id="doc-modal-file-input"
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.gif"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] ?? null;
+                    if (f && f.size > 10 * 1024 * 1024) {
+                      setDocUploadError("El archivo supera los 10 MB.");
+                      setDocUploadFile(null);
+                    } else {
+                      setDocUploadFile(f);
+                      setDocUploadError(null);
+                    }
+                  }}
+                />
+              </label>
+
+              {docUploadFile && (
+                <div className="doc-modal__file-selected">
+                  <FileText size={14} aria-hidden="true" />
+                  <span>{docUploadFile.name}</span>
+                  <button
+                    className="doc-modal__file-clear"
+                    type="button"
+                    aria-label="Quitar archivo seleccionado"
+                    onClick={() => {
+                      setDocUploadFile(null);
+                      if (docFileInputRef.current) docFileInputRef.current.value = "";
+                    }}
+                  >
+                    <X size={12} aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+
+              {docUploadError && (
+                <p className="doc-modal__error" role="alert">{docUploadError}</p>
+              )}
+
+              <div className="doc-modal__actions">
+                <button
+                  className="doc-modal__later"
+                  type="button"
+                  disabled={docUploading}
+                  onClick={closeDocModal}
+                >
+                  Más tarde
+                </button>
+                <button
+                  className="doc-modal__submit"
+                  type="button"
+                  disabled={!docUploadFile || docUploading}
+                  onClick={() => {
+                    if (docUploadFile && docsModalTransactionId !== null) {
+                      void uploadDeductibleDoc(docsModalTransactionId, docUploadFile);
+                    }
+                  }}
+                >
+                  {docUploading ? (
+                    <>Subiendo…</>
+                  ) : (
+                    <>
+                      <Paperclip size={15} aria-hidden="true" />
+                      Adjuntar documento
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </main>
   );
 }
