@@ -28,6 +28,7 @@ import {
   PlugZap,
   Popcorn,
   Save,
+  Search,
   Tag,
   Trash2,
   UtensilsCrossed,
@@ -1141,10 +1142,10 @@ function FinanceApp() {
   const [movementListOrder, setMovementListOrder] = useState<MovementListOrder>("recent");
   const [movementGrouping, setMovementGrouping] = useState<MovementGrouping>(() => {
     if (typeof window === "undefined") {
-      return "category";
+      return "none";
     }
     const savedGrouping = window.localStorage.getItem("finance:movementGrouping");
-    return savedGrouping === "none" || savedGrouping === "category" ? savedGrouping : "category";
+    return savedGrouping === "none" || savedGrouping === "category" ? savedGrouping : "none";
   });
   const [editingTransactionId, setEditingTransactionId] = useState<number | null>(null);
   const movementFormPanelRef = useRef<HTMLFormElement | null>(null);
@@ -1165,6 +1166,21 @@ function FinanceApp() {
   const [docUploading, setDocUploading] = useState(false);
   const [docUploadError, setDocUploadError] = useState<string | null>(null);
   const docFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [descriptionAcOpen, setDescriptionAcOpen] = useState(false);
+  const [descriptionAcIndex, setDescriptionAcIndex] = useState(-1);
+  const descriptionAcRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!descriptionAcOpen) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (descriptionAcRef.current && !descriptionAcRef.current.contains(event.target as Node)) {
+        setDescriptionAcOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [descriptionAcOpen]);
 
   function setMovementType(next: TransactionType) {
     setType(next);
@@ -1504,7 +1520,20 @@ function FinanceApp() {
   }, [filteredPeriodTransactions, movementGrouping, movementListOrder]);
 
   const hasActiveMovementFilters =
-    movementFilterType !== "all" || movementFilterCategory !== "" || movementSearch.trim() !== "" || movementFilterBankId !== "";
+    movementFilterType !== "all" || movementFilterCategory !== "" || movementFilterBankId !== "";
+
+  const descriptionSuggestions = useMemo(() => {
+    const unique = [...new Set(transactions.map((t) => t.description.trim()).filter((d) => d.length > 0))];
+    return unique.sort((a, b) => a.localeCompare(b, "es"));
+  }, [transactions]);
+
+  const filteredDescriptionSuggestions = useMemo(() => {
+    const query = description.trim().toLowerCase();
+    if (!query) return descriptionSuggestions.slice(0, 8);
+    return descriptionSuggestions
+      .filter((s) => s.toLowerCase().includes(query) && s.toLowerCase() !== query)
+      .slice(0, 8);
+  }, [description, descriptionSuggestions]);
 
   const totals = useMemo(() => {
     return createSummary(periodTransactions);
@@ -3318,13 +3347,94 @@ function FinanceApp() {
                 </button>
               </div>
 
-              <label>
+              <label className="ac-label">
                 Concepto
-                <input
-                  value={description}
-                  onChange={(event) => setDescription(event.target.value)}
-                  placeholder="Ej. Transporte"
-                />
+                <div className="ac-wrapper" ref={descriptionAcRef}>
+                  <input
+                    value={description}
+                    onChange={(event) => {
+                      setDescription(event.target.value);
+                      setDescriptionAcOpen(true);
+                      setDescriptionAcIndex(-1);
+                    }}
+                    onFocus={() => setDescriptionAcOpen(true)}
+                    onKeyDown={(event) => {
+                      if (!descriptionAcOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                        event.preventDefault();
+                        setDescriptionAcOpen(true);
+                        return;
+                      }
+                      if (!descriptionAcOpen || filteredDescriptionSuggestions.length === 0) return;
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        setDescriptionAcIndex((i) => (i + 1) % filteredDescriptionSuggestions.length);
+                      } else if (event.key === "ArrowUp") {
+                        event.preventDefault();
+                        setDescriptionAcIndex((i) =>
+                          i <= 0 ? filteredDescriptionSuggestions.length - 1 : i - 1,
+                        );
+                      } else if (event.key === "Enter" && descriptionAcIndex >= 0) {
+                        event.preventDefault();
+                        setDescription(filteredDescriptionSuggestions[descriptionAcIndex]);
+                        setDescriptionAcOpen(false);
+                        setDescriptionAcIndex(-1);
+                      } else if (event.key === "Escape") {
+                        setDescriptionAcOpen(false);
+                        setDescriptionAcIndex(-1);
+                      }
+                    }}
+                    placeholder="Ej. Transporte"
+                    autoComplete="off"
+                    role="combobox"
+                    aria-expanded={descriptionAcOpen && filteredDescriptionSuggestions.length > 0}
+                    aria-controls="description-ac-list"
+                    aria-activedescendant={
+                      descriptionAcIndex >= 0 ? `description-ac-opt-${descriptionAcIndex}` : undefined
+                    }
+                  />
+                  {descriptionAcOpen && filteredDescriptionSuggestions.length > 0 ? (
+                    <ul className="ac-list" id="description-ac-list" role="listbox">
+                      {filteredDescriptionSuggestions.map((suggestion, idx) => {
+                        const query = description.trim();
+                        let before = suggestion;
+                        let match = "";
+                        let after = "";
+                        if (query) {
+                          const lower = suggestion.toLowerCase();
+                          const matchStart = lower.indexOf(query.toLowerCase());
+                          if (matchStart >= 0) {
+                            before = suggestion.slice(0, matchStart);
+                            match = suggestion.slice(matchStart, matchStart + query.length);
+                            after = suggestion.slice(matchStart + query.length);
+                          }
+                        }
+                        return (
+                          <li
+                            key={suggestion}
+                            id={`description-ac-opt-${idx}`}
+                            role="option"
+                            aria-selected={descriptionAcIndex === idx}
+                            className={`ac-option${descriptionAcIndex === idx ? " ac-option--active" : ""}`}
+                            onMouseEnter={() => setDescriptionAcIndex(idx)}
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              setDescription(suggestion);
+                              setDescriptionAcOpen(false);
+                              setDescriptionAcIndex(-1);
+                            }}
+                          >
+                            <Tag className="ac-option__icon" size={13} aria-hidden="true" />
+                            <span className="ac-option__text">
+                              {before}
+                              {match ? <mark>{match}</mark> : null}
+                              {after}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : null}
+                </div>
               </label>
 
               <div className="two-fields">
@@ -3528,24 +3638,47 @@ function FinanceApp() {
                     size={18}
                   />
                 </button>
+              </div>
+
+              <div className="list-panel-search-row">
+                <div className="toolbar-search">
+                  <Search aria-hidden="true" size={16} />
+                  <input
+                    type="search"
+                    value={movementSearch}
+                    placeholder="Buscar concepto…"
+                    disabled={!interactive}
+                    autoComplete="off"
+                    aria-label="Buscar en concepto"
+                    onChange={(e) => setMovementSearch(e.target.value)}
+                  />
+                  {movementSearch ? (
+                    <button
+                      className="toolbar-search__clear"
+                      type="button"
+                      aria-label="Limpiar búsqueda"
+                      onClick={() => setMovementSearch("")}
+                    >
+                      <X size={13} aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </div>
                 <button
-                  className="transaction-filters-toggle"
+                  className="toolbar-export"
                   disabled={!interactive || filteredPeriodTransactions.length === 0}
                   type="button"
                   title="Descarga un CSV con los movimientos del listado (respeta filtros activos)."
                   aria-label="Exportar movimientos del periodo a archivo CSV"
                   onClick={() => {
-                    if (filteredPeriodTransactions.length === 0) {
-                      return;
-                    }
+                    if (filteredPeriodTransactions.length === 0) return;
                     const csv = buildMovementsCsvExport(filteredPeriodTransactions, banks);
                     const safePeriod = selectedPeriod.replace(/[^\d-]/g, "") || "periodo";
                     const stamp = new Date().toISOString().slice(0, 10);
                     downloadCsvFile(`movimientos_${safePeriod}_${stamp}.csv`, csv);
                   }}
                 >
-                  <Download aria-hidden="true" size={17} />
-                  Exportar
+                  <Download aria-hidden="true" size={16} />
+                  <span className="toolbar-export__label">CSV</span>
                 </button>
               </div>
 
@@ -3606,17 +3739,6 @@ function FinanceApp() {
                       </label>
                     ) : null}
                   </div>
-                  <label className="transaction-filter-search">
-                    Buscar en concepto
-                    <input
-                      disabled={!interactive}
-                      type="search"
-                      value={movementSearch}
-                      autoComplete="off"
-                      placeholder="Ej. supermercado"
-                      onChange={(event) => setMovementSearch(event.target.value)}
-                    />
-                  </label>
                   {hasActiveMovementFilters ? (
                     <button
                       className="filter-clear"
@@ -3626,7 +3748,6 @@ function FinanceApp() {
                         setMovementFilterType("all");
                         setMovementFilterCategory("");
                         setMovementFilterBankId("");
-                        setMovementSearch("");
                       }}
                     >
                       Limpiar filtros
