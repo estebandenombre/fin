@@ -3440,6 +3440,40 @@ input:disabled {
   white-space: nowrap;
 }
 
+.bank-default-badge {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.bank-default-toggle {
+  color: var(--muted);
+}
+
+.bank-default-toggle:hover:not(:disabled) {
+  color: #ca8a04;
+}
+
+.bank-default-toggle--active {
+  color: #ca8a04;
+}
+
+.form-field-hint {
+  display: block;
+  margin-top: 2px;
+  margin-bottom: 6px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
 .bank-name-input {
   flex: 1;
   min-width: 0;

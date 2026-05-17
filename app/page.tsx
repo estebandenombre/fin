@@ -29,6 +29,7 @@ import {
   Popcorn,
   Save,
   Search,
+  Star,
   Tag,
   Trash2,
   UtensilsCrossed,
@@ -63,6 +64,13 @@ type Bank = {
   id: number;
   name: string;
 };
+
+function resolveDefaultFormBankId(banks: Bank[], defaultBankId: number | null): number | null {
+  if (defaultBankId === null) {
+    return null;
+  }
+  return banks.some((bank) => bank.id === defaultBankId) ? defaultBankId : null;
+}
 
 type Transaction = {
   id: number;
@@ -1152,6 +1160,7 @@ function FinanceApp() {
 
   // Bancos
   const [banks, setBanks] = useState<Bank[]>([]);
+  const [defaultBankId, setDefaultBankId] = useState<number | null>(null);
   const [formBankId, setFormBankId] = useState<number | null>(null);
   const [movementFilterBankId, setMovementFilterBankId] = useState<number | "">("");
   const [banksPanelCollapsed, setBanksPanelCollapsed] = useState(true);
@@ -1186,6 +1195,11 @@ function FinanceApp() {
     setType(next);
     if (next === "income") {
       setExpenseDeductible(false);
+      if (editingTransactionId === null) {
+        setFormBankId(null);
+      }
+    } else if (editingTransactionId === null) {
+      setFormBankId(resolveDefaultFormBankId(banks, defaultBankId));
     }
     const allowed = categoriesForType(next);
     setCategory((current) => (allowed.includes(current) ? current : "General"));
@@ -1203,11 +1217,11 @@ function FinanceApp() {
     setAmount("");
     setType("expense");
     setCategory("General");
-    setFormBankId(null);
+    setFormBankId(resolveDefaultFormBankId(banks, defaultBankId));
     setExpenseDeductible(false);
     setMovementDate(getDefaultMovementDate(selectedPeriod, paydayDay));
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, [paydayDay, selectedPeriod]);
+  }, [paydayDay, selectedPeriod, banks, defaultBankId]);
 
   useEffect(() => {
     window.localStorage.setItem("finance:movementGrouping", movementGrouping);
@@ -1245,7 +1259,7 @@ function FinanceApp() {
       try {
         const settingsResult = await db
           .from("finance_settings")
-          .select("payday_day")
+          .select("payday_day, default_bank_id")
           .eq("user_id", userId)
           .maybeSingle();
 
@@ -1291,7 +1305,24 @@ function FinanceApp() {
           return;
         }
 
-        setBanks((banksResult.data ?? []).map((row) => ({ id: Number(row.id), name: String(row.name) })));
+        const loadedBanks = (banksResult.data ?? []).map((row) => ({
+          id: Number(row.id),
+          name: String(row.name),
+        }));
+        setBanks(loadedBanks);
+
+        const rawDefaultBankId = settingsResult.data?.default_bank_id;
+        let nextDefaultBankId =
+          rawDefaultBankId !== null && rawDefaultBankId !== undefined
+            ? Number(rawDefaultBankId)
+            : null;
+        if (nextDefaultBankId !== null && !loadedBanks.some((bank) => bank.id === nextDefaultBankId)) {
+          nextDefaultBankId = null;
+          void db
+            .from("finance_settings")
+            .upsert({ user_id: userId, payday_day: nextPaydayDay, default_bank_id: null }, { onConflict: "user_id" });
+        }
+        setDefaultBankId(nextDefaultBankId);
 
         const transactionsResult = await db
           .from("finance_transactions")
@@ -1808,6 +1839,7 @@ function FinanceApp() {
       {
         user_id: supabaseUserId,
         payday_day: nextPaydayDay,
+        default_bank_id: defaultBankId,
       },
       { onConflict: "user_id" },
     );
@@ -1967,6 +1999,36 @@ function FinanceApp() {
     }
   }
 
+  async function setDefaultBank(bankId: number | null) {
+    if (!supabaseUserId) {
+      return;
+    }
+
+    const nextDefault =
+      bankId !== null && banks.some((bank) => bank.id === bankId) ? bankId : null;
+
+    setSyncStatus("syncing");
+    const result = await db.from("finance_settings").upsert(
+      {
+        user_id: supabaseUserId,
+        payday_day: paydayDay,
+        default_bank_id: nextDefault,
+      },
+      { onConflict: "user_id" },
+    );
+
+    if (result.error) {
+      setSyncStatus("error");
+      return;
+    }
+
+    setDefaultBankId(nextDefault);
+    if (editingTransactionId === null && type === "expense") {
+      setFormBankId(nextDefault);
+    }
+    setSyncStatus("synced");
+  }
+
   async function removeBank(id: number) {
     if (!supabaseUserId) {
       return;
@@ -1986,8 +2048,26 @@ function FinanceApp() {
       setEditingBankId(null);
       setBankDraftName("");
     }
+    if (defaultBankId === id) {
+      setDefaultBankId(null);
+      await db.from("finance_settings").upsert(
+        {
+          user_id: supabaseUserId,
+          payday_day: paydayDay,
+          default_bank_id: null,
+        },
+        { onConflict: "user_id" },
+      );
+    }
     if (formBankId === id) {
-      setFormBankId(null);
+      setFormBankId(
+        editingTransactionId === null && type === "expense"
+          ? resolveDefaultFormBankId(
+              banks.filter((bank) => bank.id !== id),
+              defaultBankId === id ? null : defaultBankId,
+            )
+          : null,
+      );
     }
     setTransactions((current) =>
       current.map((t) => (t.bankId === id ? { ...t, bankId: null } : t)),
@@ -2001,7 +2081,7 @@ function FinanceApp() {
     setAmount("");
     setType("expense");
     setCategory("General");
-    setFormBankId(null);
+    setFormBankId(resolveDefaultFormBankId(banks, defaultBankId));
     setExpenseDeductible(false);
     setMovementDate(getDefaultMovementDate(selectedPeriod, paydayDay));
   }
@@ -2910,7 +2990,8 @@ function FinanceApp() {
           {!banksPanelCollapsed ? (
             <div className="budget-panel-body" id="banks-panel-body">
               <p className="budget-panel-lead">
-                Crea tus bancos o cuentas y asócialos a cada movimiento para ver el balance por cuenta.
+                Crea tus bancos o cuentas y asócialos a cada movimiento. Marca uno con la estrella como
+                banco por defecto para que el formulario de gastos lo preseleccione automáticamente.
               </p>
 
               {bankSummaries.length > 0 ? (
@@ -2936,7 +3017,12 @@ function FinanceApp() {
                               }}
                             />
                           ) : (
-                            bank.name
+                            <>
+                              {bank.name}
+                              {defaultBankId === bank.id ? (
+                                <span className="bank-default-badge">Por defecto</span>
+                              ) : null}
+                            </>
                           )}
                         </span>
                         <div className="bank-summary-row__actions">
@@ -2971,6 +3057,31 @@ function FinanceApp() {
                             </>
                           ) : (
                             <>
+                              <button
+                                className={`icon-button bank-default-toggle${defaultBankId === bank.id ? " bank-default-toggle--active" : ""}`}
+                                disabled={!interactive}
+                                type="button"
+                                title={
+                                  defaultBankId === bank.id
+                                    ? "Quitar como banco por defecto en gastos"
+                                    : "Usar como banco por defecto en gastos"
+                                }
+                                aria-label={
+                                  defaultBankId === bank.id
+                                    ? `Quitar ${bank.name} como banco por defecto`
+                                    : `Marcar ${bank.name} como banco por defecto en gastos`
+                                }
+                                aria-pressed={defaultBankId === bank.id}
+                                onClick={() =>
+                                  void setDefaultBank(defaultBankId === bank.id ? null : bank.id)
+                                }
+                              >
+                                <Star
+                                  aria-hidden="true"
+                                  size={15}
+                                  fill={defaultBankId === bank.id ? "currentColor" : "none"}
+                                />
+                              </button>
                               <button
                                 className="icon-button"
                                 disabled={!interactive}
@@ -3502,6 +3613,11 @@ function FinanceApp() {
               {banks.length > 0 ? (
                 <label htmlFor="field-movement-bank">
                   Banco / Cuenta
+                  {type === "expense" && defaultBankId !== null ? (
+                    <span className="form-field-hint">
+                      Por defecto: {banks.find((bank) => bank.id === defaultBankId)?.name ?? "—"}
+                    </span>
+                  ) : null}
                   <span className="select-shell select-shell--block">
                     <Landmark aria-hidden="true" className="select-shell__icon" size={17} />
                     <select
